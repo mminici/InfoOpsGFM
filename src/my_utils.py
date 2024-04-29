@@ -67,4 +67,5 @@ def load_node2vec_embeddings(data_dir, hyper_parameters):
         fill_value=None)
     for node_id in hyper_parameters['graph'].nodes():
         node_embeddings_node2vec[int(node_id)] = model.wv[node_id]
+    np.save(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy', node_embeddings_node2vec)
     return node_embeddings_node2vec

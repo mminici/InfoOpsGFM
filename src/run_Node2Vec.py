@@ -57,6 +57,7 @@ def run_experiment(dataset_name='cuba',
     # Transfer data to device
     datasets = move_data_to_device(datasets, device)
 
+    # Get Node2Vec embeddings
     node_embeddings_node2vec = load_node2vec_embeddings(data_dir, {'graph': datasets['graph'],
                                                                    'latent_dim': model_hyper_parameters['latent_dim'],
                                                                    'seed': seed})
