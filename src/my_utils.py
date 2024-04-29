@@ -5,6 +5,8 @@ import uuid
 import numpy as np
 import torch
 
+from node2vec import Node2Vec
+
 
 def set_seed(seed):
     if seed is None:
@@ -44,14 +46,25 @@ def setup_env(device_id, dataset_name, seed, num_splits, is_few_shot, hyper_para
     data_dir.mkdir(exist_ok=True, parents=True)
     return device, base_dir, interim_data_dir, data_dir
 
+
 def move_data_to_device(data, device):
-    for run_id in data:
-        for split_type in ['train', 'val', 'test']:
-            data[run_id][split_type]['edges'] = data[run_id][split_type]['edges'].to(device)
-            data[run_id][split_type]['label'] = data[run_id][split_type]['label'].to(device)
-        data[run_id]['train']['masked_edges'] = data[run_id]['train']['masked_edges'].to(
-            device)
-        data[run_id]['train']['masked_label'] = data[run_id]['train']['masked_label'].to(
-            device)
     return data
 
+
+def load_node2vec_embeddings(data_dir, hyper_parameters):
+    seed = hyper_parameters['seed']
+    latent_dim = hyper_parameters['latent_dim']
+    if (data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy').exists():
+        print('Loading node2vec embed from disk...')
+        return np.load(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy')
+    # Precompute probabilities and generate walks - **ON WINDOWS ONLY WORKS WITH workers=1**
+    node2vec = Node2Vec(hyper_parameters['graph'], dimensions=hyper_parameters['latent_dim'],
+                        walk_length=5, num_walks=10, workers=8, seed=seed)
+    # Embed nodes
+    model = node2vec.fit(window=8, min_count=1, batch_words=4, seed=seed)
+    node_embeddings_node2vec = np.full(
+        shape=(hyper_parameters['graph'].number_of_nodes(), hyper_parameters['latent_dim']),
+        fill_value=None)
+    for node_id in hyper_parameters['graph'].nodes():
+        node_embeddings_node2vec[int(node_id)] = model.wv[node_id]
+    return node_embeddings_node2vec

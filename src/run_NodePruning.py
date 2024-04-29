@@ -106,7 +106,7 @@ def run_experiment(dataset_name='cuba',
 
 if __name__ == '__main__':
     # Run input parameters
-    dataset_name = 'cuba'
+    dataset_name = 'UAE_sample'
     train_perc = 0.70
     val_perc = 0.15
     test_perc = 0.15
@@ -116,7 +116,9 @@ if __name__ == '__main__':
     num_splits = [10, ]
     # General hyperparameters
     hyper_parameters = {'train_perc': train_perc, 'val_perc': val_perc, 'test_perc': test_perc,
-                        'overwrite_data': overwrite_data, 'traces_list': ['coRT']}
+                        'overwrite_data': overwrite_data, 'traces_list': ['coRT'],
+                        'extract_largest_connected_component': True,
+                        'is_few_shot': is_few_shot}
     # optimization hyperparameters
     train_hyper_parameters = {'metric_to_optimize': 'f1_macro'}
     # model hyperparameters
@@ -124,6 +126,7 @@ if __name__ == '__main__':
     for seed_val in seed:
         mlflow.set_experiment(f'{dataset_name}-NodePruning-{seed_val}')
         for num_splits_val in num_splits:
+            hyper_parameters['num_splits'] = num_splits_val
             with mlflow.start_run():
                 exp_dir = run_experiment(dataset_name=dataset_name,
                                          is_few_shot=is_few_shot,

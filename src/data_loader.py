@@ -30,8 +30,11 @@ def load_data(data_dir):
 
 
 def create_data_loader(dataset_name, base_dir, data_dir, hyper_params):
+    processed_data_dir = base_dir / 'data' / 'processed' / dataset_name
+    processed_data_dir.mkdir(exist_ok=True, parents=True)
     # Check if data already exists or you want to create it from scratch
     if not check_data_exists(data_dir) or ("overwrite_data" in hyper_params and hyper_params["overwrite_data"]):
+        print('Data preprocessing...')
         traces_list = hyper_params['traces_list']
         # start with the first trace
         tracename = traces_list[0]
@@ -55,14 +58,16 @@ def create_data_loader(dataset_name, base_dir, data_dir, hyper_params):
         for nodeid in noderemapping_rev:
             raw_nodeid = noderemapping_rev[nodeid]
             node_labels[nodeid] = 1 if raw_nodeid in all_io_users else 0
+        network = nx.relabel_nodes(network, noderemapping)
 
         # Save the obtained network on disk
         traces_fname = "".join(traces_list)
-        nx.write_graphml(network, base_dir / 'processed' / dataset_name / f'network{traces_fname}.gml')
-        np.save(base_dir / 'processed' / dataset_name / f'network{traces_fname}_node_labels.npy', node_labels)
-        with open(base_dir / 'processed' / dataset_name / f'noderemapping{traces_fname}.pkl', 'wb') as file:
+        nx.write_graphml(network, processed_data_dir / f'network{traces_fname}.gml')
+        np.save(processed_data_dir / f'network{traces_fname}_node_labels.npy', node_labels)
+        with open(processed_data_dir / f'noderemapping{traces_fname}.pkl', 'wb') as file:
             pickle.dump(noderemapping, file)
-        with open(base_dir / 'processed' / dataset_name / f'noderemapping_rev{traces_fname}.pkl', 'wb') as file:
+        with open(processed_data_dir / f'noderemapping_rev{traces_fname}.pkl',
+                  'wb') as file:
             pickle.dump(noderemapping_rev, file)
 
         # Create num_splits random data splits
@@ -115,12 +120,12 @@ def create_data_loader(dataset_name, base_dir, data_dir, hyper_params):
             for run_id in range(hyper_params['num_splits']):
                 x_train, x_test, _, y_test = train_test_split(range(len(node_labels)), node_labels,
                                                               test_size=1 - hyper_params['train_perc'],
-                                                              stratify=True)
+                                                              stratify=node_labels)
                 x_val, x_test, _, _ = train_test_split(x_test, y_test,
                                                        test_size=hyper_params['test_perc'] / (
                                                                hyper_params['test_perc'] + hyper_params[
                                                            'val_perc']),
-                                                       stratify=True)
+                                                       stratify=y_test)
                 run_train_mask = np.full(fill_value=False, shape=len(node_labels))
                 run_train_mask[x_train] = True
                 run_val_mask = np.full(fill_value=False, shape=len(node_labels))
@@ -134,6 +139,7 @@ def create_data_loader(dataset_name, base_dir, data_dir, hyper_params):
         # Save dataset to be reusable
         save_data(data_dir, datasets)
     else:
+        print('Loading data from disk...')
         datasets = load_data(data_dir)
     return datasets
 

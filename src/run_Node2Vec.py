@@ -2,19 +2,20 @@ import os
 import mlflow
 import shutil
 import numpy as np
-import networkx as nx
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred
-from my_utils import set_seed, setup_env, move_data_to_device
-from node2vec import Node2Vec
+from my_utils import set_seed, setup_env, move_data_to_device, load_node2vec_embeddings
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
 DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
                            'val_perc': 0.15,
                            'test_perc': 0.15,
-                           'overwrite_data': False}
+                           'overwrite_data': False,
+                           'extract_largest_connected_component': True,
+                           'is_few_shot': False,
+                           'num_splits': 20}
 DEFAULT_TRAIN_HYPERPARAMETERS = {}
 DEFAULT_MODEL_HYPERPARAMETERS = {'latent_dim': 32}
 
@@ -56,16 +57,9 @@ def run_experiment(dataset_name='cuba',
     # Transfer data to device
     datasets = move_data_to_device(datasets, device)
 
-    # Precompute probabilities and generate walks - **ON WINDOWS ONLY WORKS WITH workers=1**
-    node2vec = Node2Vec(datasets['graph'], dimensions=model_hyper_parameters['latent_dim'],
-                        walk_length=5, num_walks=10, workers=8, seed=seed)
-    # Embed nodes
-    model = node2vec.fit(window=8, min_count=1, batch_words=4, seed=seed)
-    node_embeddings_node2vec = np.full(
-        shape=(datasets['graph'].number_of_nodes(), model_hyper_parameters['latent_dim']),
-        fill_value=None)
-    for node_id in datasets['graph'].nodes():
-        node_embeddings_node2vec[int(node_id)] = model.wv[node_id]
+    node_embeddings_node2vec = load_node2vec_embeddings(data_dir, {'graph': datasets['graph'],
+                                                                   'latent_dim': model_hyper_parameters['latent_dim'],
+                                                                   'seed': seed})
 
     # Create loggers
     val_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
@@ -78,15 +72,12 @@ def run_experiment(dataset_name='cuba',
         model = create_model(model_hyper_parameters)
         model.fit(node_embeddings_node2vec[datasets['splits'][run_id]['train']],
                   datasets['labels'][datasets['splits'][run_id]['train']])
-        # Evaluate perfomance on val set
         pred = model.predict(node_embeddings_node2vec)
-        # Compute test statistics
+        # Evaluate perfomance on val set
         val_metrics = eval_pred(datasets['labels'], pred, datasets['splits'][run_id]['val'])
-        for metric_name in test_metrics:
+        for metric_name in val_metrics:
             val_logger.update(metric_name, run_id, val_metrics[metric_name])
         # Evaluate perfomance on test set
-        test_pred = model.predict(node_embeddings_node2vec)
-        # Compute test statistics
         test_metrics = eval_pred(datasets['labels'], pred, datasets['splits'][run_id]['test'])
         for metric_name in test_metrics:
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
@@ -112,7 +103,7 @@ def run_experiment(dataset_name='cuba',
 
 if __name__ == '__main__':
     # Run input parameters
-    dataset_name = 'cuba'
+    dataset_name = 'UAE_sample'
     train_perc = 0.70
     val_perc = 0.15
     test_perc = 0.15
@@ -122,15 +113,18 @@ if __name__ == '__main__':
     num_splits = [10, ]
     # General hyperparameters
     hyper_parameters = {'train_perc': train_perc, 'val_perc': val_perc, 'test_perc': test_perc,
-                        'overwrite_data': overwrite_data, 'traces_list': ['coRT']}
+                        'overwrite_data': overwrite_data, 'traces_list': ['coRT'],
+                        'extract_largest_connected_component': True,
+                        'is_few_shot': is_few_shot}
     # optimization hyperparameters
     train_hyper_parameters = {}
     # model hyperparameters
     latent_dim = 64
-    model_hyper_parameters = {'latent_dim': latent_dim, 'model_name': 'RF'}
+    model_hyper_parameters = {'latent_dim': latent_dim, 'model_name': 'LR'}
     for seed_val in seed:
         mlflow.set_experiment(f'{dataset_name}-Node2Vec-{seed_val}')
         for num_splits_val in num_splits:
+            hyper_parameters['num_splits'] = num_splits_val
             with mlflow.start_run():
                 exp_dir = run_experiment(dataset_name=dataset_name,
                                          is_few_shot=is_few_shot,
