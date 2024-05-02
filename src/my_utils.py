@@ -1,11 +1,17 @@
 import pathlib
 import random
+import shutil
+import pickle
 import uuid
 
 import numpy as np
+import networkx as nx
+import scipy.sparse as sp
 import torch
 
 from node2vec import Node2Vec
+from torch_geometric.utils import from_networkx
+from sklearn.decomposition import TruncatedSVD
 
 
 def set_seed(seed):
@@ -48,6 +54,7 @@ def setup_env(device_id, dataset_name, seed, num_splits, is_few_shot, hyper_para
 
 
 def move_data_to_device(data, device):
+    data['labels'] = torch.FloatTensor(data['labels']).to(device)
     return data
 
 
@@ -69,3 +76,84 @@ def load_node2vec_embeddings(data_dir, hyper_parameters):
         node_embeddings_node2vec[int(node_id)] = model.wv[node_id]
     np.save(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy', node_embeddings_node2vec)
     return node_embeddings_node2vec
+
+
+def get_edge_index_from_networkx(network):
+    return from_networkx(network).edge_index
+
+
+def create_spectral_features(
+        graph, hidden_dim
+) -> torch.FloatTensor:
+    # Step 2. Compute Singular Value Decomposition of the adjacency matrix
+    num_nodes = graph.number_of_nodes()
+    adj_matrix = nx.to_numpy_array(graph)
+    row, col = np.where(adj_matrix == 1.)
+    sparse_adj_matrix = sp.coo_matrix((np.ones(row.shape[0]), (row, col)), shape=(num_nodes, num_nodes))
+    svd = TruncatedSVD(n_components=hidden_dim, n_iter=128)
+    svd.fit(sparse_adj_matrix)
+    node_features = svd.components_.T
+    return torch.FloatTensor(node_features)
+
+
+def degree_to_one_hot(degree_dict, num_buckets):
+    max_node_id = max(degree_dict.keys()) + 1
+    degrees_array = np.zeros((max_node_id, num_buckets), dtype=int)
+
+    # Calculate percentiles
+    values = np.array(list(degree_dict.values()))
+    percentiles = np.percentile(values, np.linspace(0, 100, num_buckets))
+
+    # Assign one-hot vectors for each node
+    for node_id, degree in degree_dict.items():
+        bucket = np.searchsorted(percentiles, degree, side="right") - 1
+        degrees_array[node_id][bucket] = 1
+
+    return torch.FloatTensor(degrees_array)
+
+
+def get_gnn_embeddings(data_dir, hyper_parameters):
+    embed_type = hyper_parameters['type']
+    path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}.pth'
+    path_to_embed.parent.mkdir(parents=True, exist_ok=True)
+    if path_to_embed.exists() and (not hyper_parameters['overwrite_data']):
+        print(f'Loading gnn({embed_type}) embed from disk...')
+        return torch.load(path_to_embed)
+    print(f'Compute gnn{embed_type} embed...')
+    if embed_type == 'positional_onehot':
+        num_nodes = hyper_parameters['num_nodes']
+        node_features = torch.eye(num_nodes).float()
+    elif embed_type == 'positional_random':
+        num_nodes = hyper_parameters['num_nodes']
+        latent_dim = hyper_parameters['latent_dim']
+        node_features = torch.rand((num_nodes, latent_dim)).float()
+    elif embed_type == 'positional_spectral':
+        latent_dim = hyper_parameters['latent_dim']
+        node_features = create_spectral_features(hyper_parameters['graph'], latent_dim)
+    elif embed_type == 'positional_degree':
+        latent_dim = hyper_parameters['latent_dim']
+        node_features = degree_to_one_hot(dict(nx.degree(hyper_parameters['graph'])), latent_dim)
+    else:
+        raise Exception(f'Embed type: {embed_type} not available yet.')
+    torch.save(node_features, path_to_embed)
+    return node_features
+
+
+def get_best_result(test_logger, metric_to_optimize):
+    return test_logger.get_metric_stats(metric_to_optimize)[0]
+
+
+def save_best_result(path, test_logger, metric_to_optimize):
+    with open(path / 'test_performance.pkl', 'wb') as file:
+        pickle.dump(test_logger.get_metric_stats(metric_to_optimize)[0], file)
+
+
+def load_best_result(path):
+    with open(path, 'rb') as file:
+        return pickle.load(file)
+
+
+def save_all_models(num_splits, interim_data_dir, best_model_datadir):
+    for run_id in range(num_splits):
+        best_model_path = interim_data_dir / f'model{run_id}.pth'
+        shutil.copyfile(str(best_model_path), str(best_model_datadir / f'model{run_id}.pth'))

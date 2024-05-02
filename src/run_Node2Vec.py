@@ -5,7 +5,7 @@ import numpy as np
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred
-from my_utils import set_seed, setup_env, move_data_to_device, load_node2vec_embeddings
+from my_utils import set_seed, setup_env, load_node2vec_embeddings
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
@@ -42,6 +42,7 @@ def run_experiment(dataset_name='cuba',
     # Start experiment
     # save parameters
     mlflow.log_param('dataset_name', dataset_name)
+    mlflow.log_param('latent_dim', model_hyper_parameters['latent_dim'])
 
     # set seed for reproducibility
     set_seed(seed)
@@ -53,9 +54,6 @@ def run_experiment(dataset_name='cuba',
     print(data_dir)
     # Create data loader for signed datasets
     datasets = create_data_loader(dataset_name, base_dir, data_dir, hyper_parameters)
-
-    # Transfer data to device
-    datasets = move_data_to_device(datasets, device)
 
     # Get Node2Vec embeddings
     node_embeddings_node2vec = load_node2vec_embeddings(data_dir, {'graph': datasets['graph'],

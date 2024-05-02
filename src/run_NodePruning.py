@@ -6,7 +6,7 @@ import networkx as nx
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred, get_best_threshold
-from my_utils import set_seed, setup_env, move_data_to_device
+from my_utils import set_seed, setup_env
 from tqdm import tqdm
 
 DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
@@ -41,9 +41,6 @@ def run_experiment(dataset_name='cuba',
     print(data_dir)
     # Create data loader for signed datasets
     datasets = create_data_loader(dataset_name, base_dir, data_dir, hyper_parameters)
-
-    # Transfer data to device
-    datasets = move_data_to_device(datasets, device)
 
     # Compute node centrality values
     # TODO: take the type of centrality as input parameter
@@ -106,7 +103,7 @@ def run_experiment(dataset_name='cuba',
 
 if __name__ == '__main__':
     # Run input parameters
-    dataset_name = 'UAE_sample'
+    dataset_name = 'cuba'
     train_perc = 0.70
     val_perc = 0.15
     test_perc = 0.15
