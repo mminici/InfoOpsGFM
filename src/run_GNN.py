@@ -7,9 +7,7 @@ import numpy as np
 from data_loader import create_data_loader
 from models import GNN
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
-from my_utils import set_seed, setup_env, move_data_to_device, get_edge_index_from_networkx, get_gnn_embeddings, \
-    save_best_result, load_best_result, save_all_models, get_best_result
-
+from my_utils import set_seed, setup_env, move_data_to_device, get_edge_index_from_networkx, get_gnn_embeddings, update_best_model_snapshot, save_metrics
 from plot_utils import plot_losses
 
 DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
@@ -40,13 +38,13 @@ def run_experiment(dataset_name='cuba',
                    model_hyper_parameters=None
                    ):
     # Start experiment
-    # save parameters
     if model_hyper_parameters is None:
         model_hyper_parameters = DEFAULT_MODEL_HYPERPARAMETERS
     if train_hyperparameters is None:
         train_hyperparameters = DEFAULT_TRAIN_HYPERPARAMETERS
     if hyper_parameters is None:
         hyper_parameters = DEFAULT_HYPERPARAMETERS
+    # save parameters
     mlflow.log_param('dataset_name', dataset_name)
     mlflow.log_param('input_embed', train_hyperparameters['input_embed'])
     mlflow.log_param('gnn_type', model_hyper_parameters['gnn_type'])
@@ -156,36 +154,17 @@ def run_experiment(dataset_name='cuba',
         mlflow.log_artifact(interim_data_dir / f'train_and_val_loss_curves{split_num}.png')
         mlflow.log_artifact(interim_data_dir / f'train_and_val_loss_curves{split_num}.pdf')
 
-    print('Val set: ')
-    for metric_name in val_logger.test_metrics_dict:
-        avg_val, std_val = val_logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'val_{metric_name}', arr=np.array(val_logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'val_{metric_name}.npy')
-        print(f'[VAL] {metric_name}: {avg_val}+-{std_val}')
+    # Save metrics
+    save_metrics(val_logger, interim_data_dir, 'VAL')
+    save_metrics(test_logger, interim_data_dir, 'TEST')
 
-    print('Test set: ')
-    for metric_name in test_logger.test_metrics_dict:
-        avg_val, std_val = test_logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'{metric_name}', arr=np.array(test_logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'{metric_name}.npy')
-        print(f'[TEST] {metric_name}: {avg_val}+-{std_val}')
-
-    # Check if this model is the best performing on the dataset
-    best_model_datadir = data_dir / f'best_models_{metric_to_optimize}'
-    best_model_datadir.mkdir(parents=True, exist_ok=True)
-    best_result = load_best_result(best_model_datadir / 'test_performance.pkl')
-    if len(list(best_model_datadir.iterdir())) or get_best_result(test_logger, metric_to_optimize) > best_result:
-        save_all_models(num_splits, interim_data_dir, best_model_datadir)
-        save_best_result(best_model_datadir / 'test_performance.pkl', test_logger, metric_to_optimize)
+    # Save best models
+    update_best_model_snapshot(data_dir, metric_to_optimize, test_logger, num_splits, interim_data_dir)
 
 
 if __name__ == '__main__':
     # Run input parameters
-    dataset_name = 'cuba'
+    dataset_name = 'UAE_sample'
     train_perc = 0.70
     val_perc = 0.15
     test_perc = 0.15
@@ -203,7 +182,7 @@ if __name__ == '__main__':
                               'early_stopping_limit': 10, 'check_loss_freq': 5, 'metric_to_optimize': 'f1_macro'}
     # model hyperparameters
     latent_dim = 100
-    gnn_type = 'sage'
+    gnn_type = 'gcn'
     model_hyper_parameters = {'gnn_type': gnn_type, 'latent_dim': latent_dim, 'dropout': 0.2}
     for seed_val in seed:
         mlflow.set_experiment(f'{dataset_name}-GNN-{seed_val}')

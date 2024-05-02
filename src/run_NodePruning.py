@@ -6,7 +6,7 @@ import networkx as nx
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred, get_best_threshold
-from my_utils import set_seed, setup_env
+from my_utils import set_seed, setup_env, save_metrics
 from tqdm import tqdm
 
 DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
@@ -23,11 +23,14 @@ def run_experiment(dataset_name='cuba',
                    num_splits=10,
                    device_id="",
                    seed=0,
-                   hyper_parameters=DEFAULT_HYPERPARAMETERS,
-                   train_hyperparameters=DEFAULT_TRAIN_HYPERPARAMETERS,
-                   model_hyper_parameters=DEFAULT_MODEL_HYPERPARAMETERS
+                   hyper_parameters=None,
+                   train_hyperparameters=None
                    ):
     # Start experiment
+    if train_hyperparameters is None:
+        train_hyperparameters = DEFAULT_TRAIN_HYPERPARAMETERS
+    if hyper_parameters is None:
+        hyper_parameters = DEFAULT_HYPERPARAMETERS
     # save parameters
     mlflow.log_param('dataset_name', dataset_name)
 
@@ -82,23 +85,9 @@ def run_experiment(dataset_name='cuba',
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
             val_logger.update(metric_name, run_id, val_metrics[metric_name])
 
-    print('Val set: ')
-    for metric_name in val_logger.test_metrics_dict:
-        avg_val, std_val = val_logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'val_{metric_name}', arr=np.array(val_logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'val_{metric_name}.npy')
-        print(f'[VAL] {metric_name}: {avg_val}+-{std_val}')
-
-    print('Test set: ')
-    for metric_name in test_logger.test_metrics_dict:
-        avg_val, std_val = test_logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'{metric_name}', arr=np.array(test_logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'{metric_name}.npy')
-        print(f'[TEST] {metric_name}: {avg_val}+-{std_val}')
+    # Save metrics
+    save_metrics(val_logger, interim_data_dir, 'VAL')
+    save_metrics(test_logger, interim_data_dir, 'TEST')
 
 
 if __name__ == '__main__':
@@ -130,8 +119,7 @@ if __name__ == '__main__':
                                          num_splits=num_splits_val,
                                          seed=seed_val,
                                          hyper_parameters=hyper_parameters,
-                                         train_hyperparameters=train_hyper_parameters,
-                                         model_hyper_parameters=model_hyper_parameters
+                                         train_hyperparameters=train_hyper_parameters
                                          )
                 try:
                     shutil.rmtree(exp_dir, ignore_errors=True)

@@ -8,6 +8,7 @@ import numpy as np
 import networkx as nx
 import scipy.sparse as sp
 import torch
+import mlflow
 
 from node2vec import Node2Vec
 from torch_geometric.utils import from_networkx
@@ -139,21 +140,43 @@ def get_gnn_embeddings(data_dir, hyper_parameters):
     return node_features
 
 
-def get_best_result(test_logger, metric_to_optimize):
+def _get_best_result(test_logger, metric_to_optimize):
     return test_logger.get_metric_stats(metric_to_optimize)[0]
 
 
-def save_best_result(path, test_logger, metric_to_optimize):
+def _save_best_result(path, test_logger, metric_to_optimize):
     with open(path / 'test_performance.pkl', 'wb') as file:
         pickle.dump(test_logger.get_metric_stats(metric_to_optimize)[0], file)
 
 
-def load_best_result(path):
+def _load_best_result(path):
     with open(path, 'rb') as file:
         return pickle.load(file)
 
 
-def save_all_models(num_splits, interim_data_dir, best_model_datadir):
+def _save_all_models(num_splits, interim_data_dir, best_model_datadir):
     for run_id in range(num_splits):
         best_model_path = interim_data_dir / f'model{run_id}.pth'
         shutil.copyfile(str(best_model_path), str(best_model_datadir / f'model{run_id}.pth'))
+
+
+def update_best_model_snapshot(data_dir, metric_to_optimize, test_logger, num_splits, interim_data_dir):
+    best_model_datadir = data_dir / f'best_models_{metric_to_optimize}'
+    best_model_datadir.mkdir(parents=True, exist_ok=True)
+    best_result = _load_best_result(best_model_datadir / 'test_performance.pkl')
+    if len(list(best_model_datadir.iterdir())) or _get_best_result(test_logger, metric_to_optimize) > best_result:
+        _save_all_models(num_splits, interim_data_dir, best_model_datadir)
+        _save_best_result(best_model_datadir / 'test_performance.pkl', test_logger, metric_to_optimize)
+
+
+def save_metrics(logger, interim_data_dir, split_type):
+    print(f'{split_type} set: ')
+    for metric_name in logger.test_metrics_dict:
+        avg_val, std_val = logger.get_metric_stats(metric_name)
+        mlflow.log_metric(metric_name + '_avg', avg_val)
+        mlflow.log_metric(metric_name + '_std', std_val)
+        np.save(file=interim_data_dir / f'val_{metric_name}' if split_type == 'VAL' else metric_name,
+                arr=np.array(logger.test_metrics_dict[metric_name]))
+        mlflow.log_artifact(interim_data_dir / f'val_{metric_name}.noy' if split_type == 'VAL' else f'{metric_name}.npy')
+        print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
+

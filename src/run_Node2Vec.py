@@ -5,7 +5,7 @@ import numpy as np
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred
-from my_utils import set_seed, setup_env, load_node2vec_embeddings
+from my_utils import set_seed, setup_env, load_node2vec_embeddings, save_metrics
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
@@ -35,11 +35,17 @@ def run_experiment(dataset_name='cuba',
                    num_splits=10,
                    device_id="",
                    seed=0,
-                   hyper_parameters=DEFAULT_HYPERPARAMETERS,
-                   train_hyperparameters=DEFAULT_TRAIN_HYPERPARAMETERS,
-                   model_hyper_parameters=DEFAULT_MODEL_HYPERPARAMETERS
+                   hyper_parameters=None,
+                   train_hyperparameters=None,
+                   model_hyper_parameters=None
                    ):
     # Start experiment
+    if model_hyper_parameters is None:
+        model_hyper_parameters = DEFAULT_MODEL_HYPERPARAMETERS
+    if train_hyperparameters is None:
+        train_hyperparameters = DEFAULT_TRAIN_HYPERPARAMETERS
+    if hyper_parameters is None:
+        hyper_parameters = DEFAULT_HYPERPARAMETERS
     # save parameters
     mlflow.log_param('dataset_name', dataset_name)
     mlflow.log_param('latent_dim', model_hyper_parameters['latent_dim'])
@@ -81,23 +87,9 @@ def run_experiment(dataset_name='cuba',
         for metric_name in test_metrics:
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
 
-    print('Val set: ')
-    for metric_name in val_logger.test_metrics_dict:
-        avg_val, std_val = val_logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'val_{metric_name}', arr=np.array(val_logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'val_{metric_name}.npy')
-        print(f'[VAL] {metric_name}: {avg_val}+-{std_val}')
-
-    print('Test set: ')
-    for metric_name in test_logger.test_metrics_dict:
-        avg_val, std_val = test_logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'{metric_name}', arr=np.array(test_logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'{metric_name}.npy')
-        print(f'[TEST] {metric_name}: {avg_val}+-{std_val}')
+    # Save metrics
+    save_metrics(val_logger, interim_data_dir, 'VAL')
+    save_metrics(test_logger, interim_data_dir, 'TEST')
 
 
 if __name__ == '__main__':
