@@ -5,9 +5,9 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from models import GNN
+from models import HeteroGNN
 from my_utils import set_seed, setup_env, move_data_to_device, get_gnn_embeddings, \
-    update_best_model_snapshot, save_metrics, get_edge_index
+    update_best_model_snapshot, save_metrics, create_data_loader_for_hgnn
 from data_loader import create_data_loader
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
 from plot_utils import plot_losses
@@ -23,8 +23,10 @@ DEFAULT_MODEL_HYPERPARAMETERS = {'gnn_type': 'gcn', 'latent_dim': 32, 'dropout':
 
 
 def create_model(model_hyperparams):
-    return GNN(num_node_features=model_hyperparams['feature_dim'], hidden_dim=model_hyperparams['latent_dim'],
-               num_classes=2, dropout_p=model_hyperparams['dropout'], gnn_type=model_hyperparams['gnn_type'])
+    model = HeteroGNN(num_node_features=model_hyperparams['feature_dim'], hidden_dim=model_hyperparams['latent_dim'],
+                      num_classes=2, dropout_p=model_hyperparams['dropout'], gnn_type=model_hyperparams['gnn_type'],
+                      aggr_fn=model_hyperparams['hgnn_aggr_type'])
+    return model
 
 
 def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, device_id):
@@ -48,8 +50,6 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # Get edge index representation
     print('Get edge index from graph ({}N {}E)'.format(datasets['graph'].number_of_nodes(),
                                                        datasets['graph'].number_of_edges()))
-    edge_index = get_edge_index(datasets['graph'], data_dir)
-    edge_index = edge_index.to(device)
     # Get node features
     print('Computing GNN features ({})...'.format(train_hyperparams['input_embed']))
     node_features = get_gnn_embeddings(data_dir, {'type': train_hyperparams['input_embed'],
@@ -72,6 +72,9 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # get training hyperparameters
     num_epochs = train_hyperparams['num_epochs']
     metric_to_optimize = train_hyperparams['metric_to_optimize']
+    # Create dataloader for HGNN
+    data = create_data_loader_for_hgnn(datasets, ['coRT', 'coURL', 'hashSeq', 'fastRT', 'tweetSim'], node_features,
+                                       datasets['labels'].long(), data_dir, device, batch_size=None)
     for run_id in tqdm(range(hyper_params['num_splits']), 'Splits training'):
         BEST_VAL_METRIC = -np.inf
         best_model_path = interim_data_dir / f'model{run_id}.pth'
@@ -87,8 +90,8 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
                 break
             model.train()
             optimizer.zero_grad()
-            pred = model(node_features, edge_index).flatten()
-            loss = loss_fn(torch.exp(pred[datasets['splits'][run_id]['train']]),
+            pred = model({'node': data['node'].x}, data.edge_index_dict)['node'].flatten()
+            loss = loss_fn(pred[datasets['splits'][run_id]['train']],
                            datasets['labels'][datasets['splits'][run_id]['train']])
             loss.backward()
             optimizer.step()
@@ -97,7 +100,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
                 # Validation step
                 model.eval()
                 with torch.no_grad():
-                    pred = model(node_features, edge_index).detach().cpu().numpy().flatten()
+                    pred = model({'node': data['node'].x}, data.edge_index_dict)['node'].detach().cpu().numpy().flatten()
                     val_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['val'])
                     train_logger.val_update(run_id, val_metrics[train_hyperparams["metric_to_optimize"]])
                     if val_metrics[train_hyperparams["metric_to_optimize"]] > BEST_VAL_METRIC:
@@ -113,7 +116,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
         model.load_state_dict(torch.load(best_model_path))
         model.eval()
         with torch.no_grad():
-            pred = model(node_features, edge_index).detach().cpu().numpy().flatten()
+            pred = model({'node': data['node'].x}, data.edge_index_dict)['node'].detach().cpu().numpy().flatten()
         # Evaluate perfomance on val set
         val_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['val'])
         for metric_name in val_metrics:
@@ -145,7 +148,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Preprocess dataset to produce train-val-test split")
-    parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='cuba')
+    parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='UAE_sample')
     parser.add_argument('-seed', '--seed', type=int, help='Random seed', default=12121995)
     parser.add_argument('-train_perc', '--train', type=float, help='Training percentage', default=.6)
     parser.add_argument('-val_perc', '--val', type=float, help='Validation percentage', default=.2)
@@ -156,9 +159,10 @@ if __name__ == '__main__':
                         default=.99)
     # parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
     #                                                                          "otherwise return the fused")
-    parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='1')
+    parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='0')
     parser.add_argument('-gnn_aggr_fn', '--aggr_fn', type=str, help='GNN aggregation function', default='mean')
-    parser.add_argument('-gnn_embed_type', '--embed_type', type=str, help='GNN Embedding Type', default='positional_rw')
+    parser.add_argument('-hgnn_aggr_fn', '--hgnn_aggr_fn', type=str, help='HGNN aggregation function', default='cat')
+    parser.add_argument('-gnn_embed_type', '--embed_type', type=str, help='GNN Embedding Type', default='positional_degree')
     parser.add_argument('-num_epochs', '--epochs', type=int, help='#Training Epochs', default=1000)
     parser.add_argument('-learning_rate', '--lr', type=float, help='Optimizer Learning Rate', default=1e-2)
     parser.add_argument('-early_stopping_limit', '--early', type=int, help='Num patience steps', default=20)
@@ -169,13 +173,14 @@ if __name__ == '__main__':
     parser.add_argument('-dropout', '--dropout', type=float, help='Dropout frequency', default=.2)
     args = parser.parse_args()
     # General hyperparameters
-    hyper_parameters = {'train_perc': args.train, 'val_perc': args.val, 'test_perc': args.test, 
+    hyper_parameters = {'train_perc': args.train, 'val_perc': args.val, 'test_perc': args.test,
                         'aggr_type': args.aggr_fn, 'num_splits': args.splits, 'seed': args.seed,
                         'tsim_th': args.tsim_th}
     # optimization hyperparameters
     train_hyperparameters = {'input_embed': args.embed_type, 'num_epochs': args.epochs, 'learning_rate': args.lr,
-                              'early_stopping_limit': args.early, 'check_loss_freq': args.check, 
-                              'metric_to_optimize': args.val_metric}
+                             'early_stopping_limit': args.early, 'check_loss_freq': args.check,
+                             'metric_to_optimize': args.val_metric}
     # model hyperparameters
-    model_hyperparameters = {'gnn_type': args.gnn, 'latent_dim': args.latent, 'dropout': args.dropout}
+    model_hyperparameters = {'gnn_type': args.gnn, 'latent_dim': args.latent, 'dropout': args.dropout,
+                             'hgnn_aggr_type': args.hgnn_aggr_fn}
     main(args.dataset, train_hyperparameters, model_hyperparameters, hyper_parameters, args.device)

@@ -12,6 +12,8 @@ import mlflow
 
 from node2vec import Node2Vec
 from torch_geometric.utils import from_networkx
+from torch_geometric.data import HeteroData
+from torch_geometric.loader import DataLoader
 from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
 from sklearn.decomposition import TruncatedSVD
 from text_embed_util import get_tweet_embed
@@ -152,15 +154,19 @@ def get_gnn_embeddings(data_dir, hyper_parameters):
     return node_features
 
 
-def get_edge_index(graph, data_dir):
-    if not (data_dir / 'edge_index.th').exists():
-        print(str(data_dir / 'edge_index.th') + ' does not exist. Computing it now...')
+def get_edge_index(graph, data_dir, type=None):
+    if type is None:
+        fname = 'edge_index.th'
+    else:
+        fname = f'edge_index{type}.th'
+    if not (data_dir / fname).exists():
+        print(str(data_dir / fname) + ' does not exist. Computing it now...')
         edge_index = get_edge_index_from_networkx(graph)
-        torch.save(edge_index, data_dir / 'edge_index.th')
+        torch.save(edge_index, data_dir / fname)
         return edge_index
     else:
-        print('Loading ' + str(data_dir / 'edge_index.th'))
-        return torch.load(data_dir / 'edge_index.th')
+        print('Loading ' + str(data_dir / fname))
+        return torch.load(data_dir / fname)
 
 
 def _get_best_result(test_logger, metric_to_optimize):
@@ -206,3 +212,15 @@ def save_metrics(logger, interim_data_dir, split_type):
         mlflow.log_artifact(
             interim_data_dir / f'val_{metric_name}.npy' if split_type == 'VAL' else f'{metric_name}.npy')
         print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
+
+
+def create_data_loader_for_hgnn(datasets, graph_list, node_features, node_labels, data_dir, device, batch_size=None):
+    data = HeteroData()
+    data['node'].x = node_features
+    data['node'].y = node_labels
+    for graph_name in graph_list:
+        data['node', graph_name, 'node'].edge_index = get_edge_index(datasets[graph_name], data_dir,
+                                                                     type=graph_name).to(device).long()
+    return data
+    # return DataLoader([data], batch_size=batch_size, shuffle=True)
+
