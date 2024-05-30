@@ -12,7 +12,9 @@ import mlflow
 
 from node2vec import Node2Vec
 from torch_geometric.utils import from_networkx
+from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
 from sklearn.decomposition import TruncatedSVD
+from text_embed_util import get_tweet_embed
 
 
 def set_seed(seed):
@@ -28,7 +30,8 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def setup_env(device_id, dataset_name, seed, num_splits, is_few_shot, hyper_parameters):
+def setup_env(device_id, dataset_name, hyper_parameters):
+    # seed, num_splits = hyper_parameters['seed'], hyper_parameters['num_splits']
     device = torch.device("cuda" if torch.cuda.is_available() and device_id != "-1" else "cpu")
     # Creating folder to host run-specific files
     base_dir = pathlib.Path.cwd().parent
@@ -38,19 +41,12 @@ def setup_env(device_id, dataset_name, seed, num_splits, is_few_shot, hyper_para
     # Import dataset
     processed_data_dir = base_dir / 'data' / 'processed'
     data_dir = processed_data_dir / dataset_name
-    data_dir = data_dir / f'seed_{seed}_num_splits_{num_splits}'
-    if is_few_shot:
-        num_few_shot_train = hyper_parameters['num_few_shot_train']
-        num_few_shot_val = hyper_parameters['num_few_shot_val']
-        test_perc = hyper_parameters['test_perc']
-        data_dir = data_dir / 'fsl' / f'train_{num_few_shot_train}_val_{num_few_shot_val}_test_{round(test_perc, 2)}'
-        data_dir.mkdir(exist_ok=True, parents=True)
-        return device, base_dir, interim_data_dir, data_dir
-    train_perc = hyper_parameters['train_perc']
-    val_perc = hyper_parameters['val_perc']
-    test_perc = hyper_parameters['test_perc']
-    data_dir = data_dir / f'train_{round(train_perc, 2)}_val_{round(val_perc, 2)}_test_{round(test_perc, 2)}'
-    data_dir.mkdir(exist_ok=True, parents=True)
+    # data_dir = data_dir / f'seed_{seed}_num_splits_{num_splits}'
+    # train_perc = hyper_parameters['train_perc']
+    # val_perc = hyper_parameters['val_perc']
+    # test_perc = hyper_parameters['test_perc']
+    # data_dir = data_dir / f'train_{round(train_perc, 2)}_val_{round(val_perc, 2)}_test_{round(test_perc, 2)}'
+    # data_dir.mkdir(exist_ok=True, parents=True)
     return device, base_dir, interim_data_dir, data_dir
 
 
@@ -64,7 +60,7 @@ def load_node2vec_embeddings(data_dir, hyper_parameters):
     latent_dim = hyper_parameters['latent_dim']
     if (data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy').exists():
         print('Loading node2vec embed from disk...')
-        return np.load(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy')
+        return np.load(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy', allow_pickle=True)
     # Precompute probabilities and generate walks - **ON WINDOWS ONLY WORKS WITH workers=1**
     node2vec = Node2Vec(hyper_parameters['graph'], dimensions=hyper_parameters['latent_dim'],
                         walk_length=5, num_walks=10, workers=8, seed=seed)
@@ -116,8 +112,13 @@ def degree_to_one_hot(degree_dict, num_buckets):
 def get_gnn_embeddings(data_dir, hyper_parameters):
     embed_type = hyper_parameters['type']
     path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}.pth'
+    if 'aggr_type' in hyper_parameters and hyper_parameters['aggr_type'] == 'max':
+        path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}MAX.pth'
+    if 'rw' in embed_type:
+        latent_dim = hyper_parameters['latent_dim']
+        path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}_rw{latent_dim}.pth'
     path_to_embed.parent.mkdir(parents=True, exist_ok=True)
-    if path_to_embed.exists() and (not hyper_parameters['overwrite_data']):
+    if path_to_embed.exists():
         print(f'Loading gnn({embed_type}) embed from disk...')
         return torch.load(path_to_embed)
     print(f'Compute gnn{embed_type} embed...')
@@ -134,10 +135,32 @@ def get_gnn_embeddings(data_dir, hyper_parameters):
     elif embed_type == 'positional_degree':
         latent_dim = hyper_parameters['latent_dim']
         node_features = degree_to_one_hot(dict(nx.degree(hyper_parameters['graph'])), latent_dim)
+    elif embed_type == 'positional_rw':
+        latent_dim = hyper_parameters['latent_dim']
+        feature_generator = AddRandomWalkPE(latent_dim)
+        graph_data = from_networkx(hyper_parameters['graph'])
+        graph_data = feature_generator(graph_data)
+        node_features = graph_data.random_walk_pe
+    elif embed_type == 'tweets':
+        node_features = get_tweet_embed(hyper_parameters['base_dir'], hyper_parameters['dataset_name'],
+                                        hyper_parameters['noderemapping'], hyper_parameters['noderemapping_rev'],
+                                        hyper_parameters['num_cores'], hyper_parameters['num_tweet_to_sample'],
+                                        hyper_parameters['aggr_type'], hyper_parameters['device'])
     else:
         raise Exception(f'Embed type: {embed_type} not available yet.')
     torch.save(node_features, path_to_embed)
     return node_features
+
+
+def get_edge_index(graph, data_dir):
+    if not (data_dir / 'edge_index.th').exists():
+        print(str(data_dir / 'edge_index.th') + ' does not exist. Computing it now...')
+        edge_index = get_edge_index_from_networkx(graph)
+        torch.save(edge_index, data_dir / 'edge_index.th')
+        return edge_index
+    else:
+        print('Loading ' + str(data_dir / 'edge_index.th'))
+        return torch.load(data_dir / 'edge_index.th')
 
 
 def _get_best_result(test_logger, metric_to_optimize):
@@ -145,7 +168,7 @@ def _get_best_result(test_logger, metric_to_optimize):
 
 
 def _save_best_result(path, test_logger, metric_to_optimize):
-    with open(path / 'test_performance.pkl', 'wb') as file:
+    with open(path, 'wb') as file:
         pickle.dump(test_logger.get_metric_stats(metric_to_optimize)[0], file)
 
 
@@ -163,8 +186,11 @@ def _save_all_models(num_splits, interim_data_dir, best_model_datadir):
 def update_best_model_snapshot(data_dir, metric_to_optimize, test_logger, num_splits, interim_data_dir):
     best_model_datadir = data_dir / f'best_models_{metric_to_optimize}'
     best_model_datadir.mkdir(parents=True, exist_ok=True)
-    best_result = _load_best_result(best_model_datadir / 'test_performance.pkl')
-    if len(list(best_model_datadir.iterdir())) or _get_best_result(test_logger, metric_to_optimize) > best_result:
+    dir_is_empty = not any(best_model_datadir.iterdir())
+    has_best_performance = (best_model_datadir / 'test_performance.pkl').exists()
+    if (dir_is_empty or not has_best_performance) or _get_best_result(test_logger,
+                                                                      metric_to_optimize) > _load_best_result(
+            best_model_datadir / 'test_performance.pkl'):
         _save_all_models(num_splits, interim_data_dir, best_model_datadir)
         _save_best_result(best_model_datadir / 'test_performance.pkl', test_logger, metric_to_optimize)
 
@@ -177,6 +203,6 @@ def save_metrics(logger, interim_data_dir, split_type):
         mlflow.log_metric(metric_name + '_std', std_val)
         np.save(file=interim_data_dir / f'val_{metric_name}' if split_type == 'VAL' else metric_name,
                 arr=np.array(logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / f'val_{metric_name}.noy' if split_type == 'VAL' else f'{metric_name}.npy')
+        mlflow.log_artifact(
+            interim_data_dir / f'val_{metric_name}.npy' if split_type == 'VAL' else f'{metric_name}.npy')
         print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
-
