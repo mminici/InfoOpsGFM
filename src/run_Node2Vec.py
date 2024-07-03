@@ -1,21 +1,19 @@
-import os
 import argparse
 import mlflow
 import shutil
+import torch
+import numpy as np
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred
-from my_utils import set_seed, setup_env, load_node2vec_embeddings, save_metrics
+from my_utils import set_seed, setup_env, load_node2vec_embeddings, save_metrics, generate_nested_list, average_embeddings
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
-DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
-                           'val_perc': 0.15,
-                           'test_perc': 0.15,
-                           'overwrite_data': False,
-                           'extract_largest_connected_component': True,
-                           'is_few_shot': False,
-                           'num_splits': 20}
+DEFAULT_HYPERPARAMETERS = {'train_perc': 0.6,
+                           'val_perc': 0.2,
+                           'test_perc': 0.2,
+                           'num_splits': 5}
 DEFAULT_TRAIN_HYPERPARAMETERS = {}
 DEFAULT_MODEL_HYPERPARAMETERS = {'latent_dim': 32}
 
@@ -64,6 +62,11 @@ def main(dataset_name='cuba',
     val_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
     test_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
 
+    excluded_users_df = datasets['excluded_users']
+    rnd_nodes_for_excluded_users = generate_nested_list(N=excluded_users_df.userid.nunique(), K=5,
+                                                        M=node_embeddings_node2vec.shape[0])
+    numpy_labels_with_excluded_users = np.concatenate([datasets['labels'], np.ones(excluded_users_df.userid.nunique())])
+
     for run_id in range(num_splits):
         print(f'Split {run_id + 1}/{num_splits}')
         # Creating the model
@@ -76,7 +79,16 @@ def main(dataset_name='cuba',
         for metric_name in val_metrics:
             val_logger.update(metric_name, run_id, val_metrics[metric_name])
         # Evaluate perfomance on test set
-        test_metrics = eval_pred(datasets['labels'], pred, datasets['splits'][run_id]['test'])
+        # Generate predictions for excluded users
+        excluded_users_embeddings = average_embeddings(torch.tensor(node_embeddings_node2vec.astype(float)), rnd_nodes_for_excluded_users, None)
+        excluded_users_preds = model.predict(excluded_users_embeddings.detach().cpu().numpy())
+        test_pred_with_excluded_users = np.concatenate([pred, excluded_users_preds])
+        test_mask = datasets['splits'][run_id]['test']
+        enhanced_test_mask = np.concatenate(
+            [test_mask, np.full((len(rnd_nodes_for_excluded_users),), fill_value=True)])
+        test_metrics = eval_pred(numpy_labels_with_excluded_users,
+                                 test_pred_with_excluded_users,
+                                 enhanced_test_mask)
         for metric_name in test_metrics:
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
 

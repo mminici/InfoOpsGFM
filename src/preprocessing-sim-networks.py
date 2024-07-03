@@ -8,6 +8,32 @@ import preprocessing_util
 import tweetSimUtil
 
 
+# Function to check if a node ID is a valid numeric string
+def is_valid_node_id(node_id):
+    try:
+        # Check if the node ID is a string representation of a number
+        return isinstance(node_id, str) and node_id.isdigit()
+    except:
+        return False
+
+
+def correct_nodeIDs(G):
+    # Initial count of valid node IDs
+    valid_node_ids = [node for node in G.nodes if is_valid_node_id(node)]
+    valid_node_count = len(valid_node_ids)
+
+    # Remove invalid node IDs
+    invalid_node_ids = [node for node in G.nodes if not is_valid_node_id(node)]
+    # G.remove_nodes_from(invalid_node_ids)
+    print('Valid', valid_node_count)
+    print('Invalid', len(invalid_node_ids))
+    corrected_G = G.copy()
+    corrected_G.remove_nodes_from(invalid_node_ids)
+    print('Valid+Invalid #edges', G.number_of_edges())
+    print('Valid #edges', corrected_G.number_of_edges())
+    return corrected_G
+
+
 def save_network(network, path):
     with open(path, 'wb') as f:
         pickle.dump(network, f)
@@ -35,20 +61,25 @@ def main(dataset_name):
     iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name], sep=",")
     print('Get CoRetweet network...')
     coRT = preprocessing_util.coRetweet(control_df, iodrivers_df)
+    coRT = correct_nodeIDs(coRT)
     save_network(coRT, data_dir / 'coRT.pkl')
     print('Get CoURL network...')
     coURL = preprocessing_util.coURL(control_df, iodrivers_df)
+    coURL = correct_nodeIDs(coURL)
     save_network(coURL, data_dir / 'coURL.pkl')
     print('Get HashtagSeq network...')
     hashSeq = preprocessing_util.hashSeq(control_df, iodrivers_df, minHashtags=5)
+    hashSeq = correct_nodeIDs(hashSeq)
     save_network(hashSeq, data_dir / 'hashSeq.pkl')
     print('Get fastRetweet network...')
     fastRT = preprocessing_util.fastRetweet(control_df, iodrivers_df, timeInterval=10)
+    fastRT = correct_nodeIDs(fastRT)
     save_network(fastRT, data_dir / 'fastRT.pkl')
     print('Get tweetSimilarity network...')
     tweetSimPath = data_dir / 'tweetSim'
     tweetSimPath.mkdir(parents=True, exist_ok=True)
     tweetSim = tweetSimUtil.getTweetSimNetwork(control_df, iodrivers_df, outputDir=tweetSimPath)
+    tweetSim = correct_nodeIDs(tweetSim)
     save_network(tweetSim, data_dir / 'tweetSim.pkl')
     print('Deriving fused network...')
     fusedNet = coRT.copy()

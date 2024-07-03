@@ -4,11 +4,20 @@ from sklearn import metrics
 from tqdm import tqdm
 
 
-def eval_pred(ground_truth, pred, mask):
-    metrics_dict = {'f1_macro': metrics.f1_score(ground_truth[mask], pred[mask], average='macro'),
-                    'f1_micro': metrics.f1_score(ground_truth[mask], pred[mask], average='micro'),
-                    'accuracy': metrics.accuracy_score(ground_truth[mask], pred[mask]),
-                    'precision': metrics.precision_score(ground_truth[mask], pred[mask])}
+def eval_pred(ground_truth, pred, mask, prob_pred=None):
+    if mask.sum() > 0:
+        metrics_dict = {'f1_macro': metrics.f1_score(ground_truth[mask], pred[mask], average='macro'),
+                        'f1_micro': metrics.f1_score(ground_truth[mask], pred[mask], average='micro'),
+                        'accuracy': metrics.accuracy_score(ground_truth[mask], pred[mask]),
+                        'precision': metrics.precision_score(ground_truth[mask], pred[mask])}
+        if prob_pred is not None:
+            metrics_dict['roc_auc'] = metrics.roc_auc_score(ground_truth[mask], prob_pred[mask])
+    else:
+        metrics_dict = {'f1_macro': None,
+                        'f1_micro': None,
+                        'accuracy': None,
+                        'precision': None,
+                        'roc_auc': None}
     return metrics_dict
 
 

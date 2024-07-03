@@ -18,12 +18,9 @@ def save_dataset(data_dir, data, filter_th):
         pickle.dump(data, file)
 
 
-def load_network(path, net_type):
+def load_network(path, net_type=None):
     with open(path, 'rb') as f:
         network = pickle.load(f)
-        if net_type == 'tweetSim':
-            noderemapping = {nodeid: str(format(nodeid, '.0f')) for nodeid in network.nodes()}
-            return nx.relabel_nodes(network, noderemapping)
         return network
 
 
@@ -59,6 +56,7 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
     fusedNet = nx.compose(fusedNet, hashSeq)
     fusedNet = nx.compose(fusedNet, coURL)
     fusedNet = nx.compose(fusedNet, coRT)
+    user_within_fusedNet = set([np.int64(elem) for elem in fusedNet.nodes()])
     # Remap nodes
     print('Remap nodes of fused network...')
     noderemapping = {nodeid: i for i, nodeid in enumerate(fusedNet.nodes())}
@@ -96,6 +94,12 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
         datasets['splits'][run_id] = {'train': np.copy(run_train_mask),
                                       'val': np.copy(run_val_mask),
                                       'test': np.copy(run_test_mask)}
+    # Add to the datasets the dataframes of users not present in the network
+    tweets_df = pd.read_csv(base_dir / 'data' / 'processed' / dataset_name / 'IO_mostPop_tweet_texts.csv', index_col=0)
+    user_with_tweets = set(tweets_df.userid.unique())
+    user_with_tweets_excluded_from_fusedNet = user_with_tweets - user_within_fusedNet
+    result_df_limited = tweets_df[tweets_df.userid.isin(user_with_tweets_excluded_from_fusedNet)]
+    datasets['excluded_users'] = result_df_limited
     # Save dataset to be reusable
     save_dataset(data_dir, datasets, filter_th)
 

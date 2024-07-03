@@ -125,7 +125,7 @@ class SelfAttention(nn.Module):
 
 
 class HeteroGNN(torch.nn.Module):
-    def __init__(self, gnn_type, num_node_features, hidden_dim, activation_fn=torch.nn.ReLU(), dropout_p=0.2,
+    def __init__(self, gnn_type, num_node_features, hidden_dim, edge_types, activation_fn=torch.nn.ReLU(), dropout_p=0.2,
                  num_classes=2, aggr_fn='sum'):
         super(HeteroGNN, self).__init__()
         if gnn_type == 'gcn':
@@ -136,13 +136,7 @@ class HeteroGNN(torch.nn.Module):
             self.gnn_block = SAGEConv
         else:
             raise Exception(f'{gnn_type} is not supported.')
-        self.conv1 = HeteroConv({
-            ('node', 'coRT', 'node'): self.gnn_block(num_node_features, hidden_dim),
-            ('node', 'coURL', 'node'): self.gnn_block(num_node_features, hidden_dim),
-            ('node', 'hashSeq', 'node'): self.gnn_block(num_node_features, hidden_dim),
-            ('node', 'fastRT', 'node'): self.gnn_block(num_node_features, hidden_dim),
-            ('node', 'tweetSim', 'node'): self.gnn_block(num_node_features, hidden_dim),
-        }, aggr=aggr_fn)
+        self.conv1 = HeteroConv({('node', edge_type, 'node'): self.gnn_block(num_node_features, hidden_dim) for edge_type in edge_types}, aggr=aggr_fn)
         self.activation_fn = activation_fn
         self.dropout = torch.nn.Dropout(dropout_p)
         if aggr_fn == 'cat':
@@ -150,24 +144,15 @@ class HeteroGNN(torch.nn.Module):
         else:
             multiplier = 1
         if num_classes > 2:
-            self.conv2 = HeteroConv({
-                ('node', 'coRT', 'node'): self.gnn_block(multiplier * hidden_dim, num_classes),
-                ('node', 'coURL', 'node'): self.gnn_block(multiplier * hidden_dim, num_classes),
-                ('node', 'hashSeq', 'node'): self.gnn_block(multiplier * hidden_dim, num_classes),
-                ('node', 'fastRT', 'node'): self.gnn_block(multiplier * hidden_dim, num_classes),
-                ('node', 'tweetSim', 'node'): self.gnn_block(multiplier * hidden_dim, num_classes),
-            }, aggr=aggr_fn)
+            self.conv2 = HeteroConv(
+                {('node', edge_type, 'node'): self.gnn_block(multiplier * hidden_dim, num_classes) for edge_type in
+                 edge_types}, aggr=aggr_fn)
             self.output_fn = torch.nn.LogSoftmax(dim=1)
         else:
-            self.conv2 = HeteroConv({
-                ('node', 'coRT', 'node'): self.gnn_block(multiplier * hidden_dim, 1),
-                ('node', 'coURL', 'node'): self.gnn_block(multiplier * hidden_dim, 1),
-                ('node', 'hashSeq', 'node'): self.gnn_block(multiplier * hidden_dim, 1),
-                ('node', 'fastRT', 'node'): self.gnn_block(multiplier * hidden_dim, 1),
-                ('node', 'tweetSim', 'node'): self.gnn_block(multiplier * hidden_dim, 1),
-            }, aggr=aggr_fn)
-            self.projection1 = SelfAttention(multiplier, 5)
-            self.projection2 = nn.Linear(multiplier, 1)
+            self.conv2 = HeteroConv({('node', edge_type, 'node'): self.gnn_block(multiplier * hidden_dim, 1)
+                                     for edge_type in edge_types}, aggr=aggr_fn)
+            # self.projection1 = SelfAttention(multiplier, 5)
+            # self.projection2 = nn.Linear(multiplier, 1)
             self.output_fn = torch.nn.LogSigmoid()
 
     def forward(self, x_dict, edge_index_dict):
@@ -175,7 +160,8 @@ class HeteroGNN(torch.nn.Module):
         x_dict = {key: self.activation_fn(x) for key, x in x_dict.items()}
         x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
         x_dict = self.conv2(x_dict, edge_index_dict)
-        x_dict = {key: torch.exp(self.output_fn(self.projection2(self.projection1(x)))) for key, x in x_dict.items()}
+        # x_dict = {key: torch.exp(self.output_fn(self.projection2(self.projection1(x)))) for key, x in x_dict.items()}
+        x_dict = {key: torch.exp(self.output_fn(x)) for key, x in x_dict.items()}
         return x_dict
 
 

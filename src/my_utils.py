@@ -9,11 +9,12 @@ import networkx as nx
 import scipy.sparse as sp
 import torch
 import mlflow
+from collections import Counter
+
 
 from node2vec import Node2Vec
 from torch_geometric.utils import from_networkx
 from torch_geometric.data import HeteroData
-from torch_geometric.loader import DataLoader
 from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
 from sklearn.decomposition import TruncatedSVD
 from text_embed_util import get_tweet_embed
@@ -95,8 +96,24 @@ def create_spectral_features(
     return torch.FloatTensor(node_features)
 
 
-def degree_to_one_hot(degree_dict, num_buckets):
-    max_node_id = max(degree_dict.keys()) + 1
+def tensors_from_ids(tensor_dict, id_list):
+    """
+    Returns a 2D torch tensor containing all the tensors of the IDs contained in the list.
+
+    Parameters:
+    tensor_dict (dict): A dictionary where keys are integer IDs and values are 1D torch tensors.
+    id_list (list): A list of integer IDs.
+
+    Returns:
+    torch.Tensor: A 2D torch tensor containing the tensors corresponding to the IDs in id_list.
+    """
+    tensor_list = [tensor_dict[id_val] for id_val in id_list]
+    return torch.stack(tensor_list)
+
+
+def degree_to_one_hot(degree_dict, num_buckets, max_node_id):
+    # max_node_id = max(degree_dict.keys()) + 1
+    # max_node_id = len(degree_dict.keys())
     degrees_array = np.zeros((max_node_id, num_buckets), dtype=int)
 
     # Calculate percentiles
@@ -111,19 +128,30 @@ def degree_to_one_hot(degree_dict, num_buckets):
     return torch.FloatTensor(degrees_array)
 
 
-def get_gnn_embeddings(data_dir, hyper_parameters):
+def get_gnn_embeddings(data_dir, hyper_parameters, type=None):
+    trace_type = hyper_parameters['trace_type']
     embed_type = hyper_parameters['type']
-    path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}.pth'
-    if 'aggr_type' in hyper_parameters and hyper_parameters['aggr_type'] == 'max':
-        path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}MAX.pth'
-    if 'rw' in embed_type:
-        latent_dim = hyper_parameters['latent_dim']
-        path_to_embed = data_dir / 'nodefeatures' / f'gnn{embed_type}_rw{latent_dim}.pth'
+    if type is None:
+        path_to_embed = data_dir / 'nodefeatures' / trace_type / f'gnn{embed_type}.pth'
+        if 'aggr_type' in hyper_parameters and hyper_parameters['aggr_type'] == 'max':
+            path_to_embed = data_dir / 'nodefeatures' / trace_type / f'gnn{embed_type}MAX.pth'
+        if 'rw' in embed_type:
+            latent_dim = hyper_parameters['latent_dim']
+            path_to_embed = data_dir / 'nodefeatures' / trace_type / f'gnn{embed_type}_rw{latent_dim}.pth'
+    else:
+        path_to_embed = data_dir / 'nodefeatures' / trace_type / f'gnn{embed_type}_{type}.pth'
+        if 'aggr_type' in hyper_parameters and hyper_parameters['aggr_type'] == 'max':
+            path_to_embed = data_dir / 'nodefeatures' / trace_type / f'gnn{embed_type}MAX_{type}.pth'
+        if 'rw' in embed_type:
+            latent_dim = hyper_parameters['latent_dim']
+            path_to_embed = data_dir / 'nodefeatures' / trace_type / f'gnn{embed_type}_rw{latent_dim}_{type}.pth'
     path_to_embed.parent.mkdir(parents=True, exist_ok=True)
     if path_to_embed.exists():
-        print(f'Loading gnn({embed_type}) embed from disk...')
+        print(f'Loading embed from disk...')
+        print(str(path_to_embed))
         return torch.load(path_to_embed)
     print(f'Compute gnn{embed_type} embed...')
+    print(str(path_to_embed))
     if embed_type == 'positional_onehot':
         num_nodes = hyper_parameters['num_nodes']
         node_features = torch.eye(num_nodes).float()
@@ -136,7 +164,8 @@ def get_gnn_embeddings(data_dir, hyper_parameters):
         node_features = create_spectral_features(hyper_parameters['graph'], latent_dim)
     elif embed_type == 'positional_degree':
         latent_dim = hyper_parameters['latent_dim']
-        node_features = degree_to_one_hot(dict(nx.degree(hyper_parameters['graph'])), latent_dim)
+        node_features = degree_to_one_hot(dict(nx.degree(hyper_parameters['graph'])), latent_dim,
+                                          hyper_parameters['num_nodes'])
     elif embed_type == 'positional_rw':
         latent_dim = hyper_parameters['latent_dim']
         feature_generator = AddRandomWalkPE(latent_dim)
@@ -196,7 +225,7 @@ def update_best_model_snapshot(data_dir, metric_to_optimize, test_logger, num_sp
     has_best_performance = (best_model_datadir / 'test_performance.pkl').exists()
     if (dir_is_empty or not has_best_performance) or _get_best_result(test_logger,
                                                                       metric_to_optimize) > _load_best_result(
-            best_model_datadir / 'test_performance.pkl'):
+        best_model_datadir / 'test_performance.pkl'):
         _save_all_models(num_splits, interim_data_dir, best_model_datadir)
         _save_best_result(best_model_datadir / 'test_performance.pkl', test_logger, metric_to_optimize)
 
@@ -214,13 +243,103 @@ def save_metrics(logger, interim_data_dir, split_type):
         print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
 
 
-def create_data_loader_for_hgnn(datasets, graph_list, node_features, node_labels, data_dir, device, batch_size=None):
+def create_data_loader_for_hgnn(datasets, graph_list, node_features, node_labels, data_dir, device, batch_size=None,
+                                sanity_check=False):
     data = HeteroData()
     data['node'].x = node_features
     data['node'].y = node_labels
+    edge_naming_fn = lambda x: x if not sanity_check else 'connects'
     for graph_name in graph_list:
-        data['node', graph_name, 'node'].edge_index = get_edge_index(datasets[graph_name], data_dir,
-                                                                     type=graph_name).to(device).long()
+        data['node', edge_naming_fn(graph_name), 'node'].edge_index = get_edge_index(datasets[graph_name], data_dir,
+                                                                                     type=edge_naming_fn(
+                                                                                         graph_name)).to(device).long()
     return data
     # return DataLoader([data], batch_size=batch_size, shuffle=True)
 
+
+def generate_nested_list(N, K, M):
+    # Initialize the outer list
+    nested_list = []
+
+    # Loop to create each inner list
+    for _ in range(N):
+        inner_list = [random.randint(0, M - 1) for _ in range(K)]
+        nested_list.append(inner_list)
+
+    return nested_list
+
+
+def average_embeddings(embeddings, nested_list, device):
+    N = len(nested_list)
+    d = embeddings.size(1)
+
+    # Initialize the result tensor
+    result_tensor = torch.zeros((N, d))
+
+    # Compute the average embedding for each inner list
+    for i, inner_list in enumerate(nested_list):
+        tmp_embeddings = embeddings[inner_list, :]
+        average_embedding = tmp_embeddings.mean(dim=0)
+        result_tensor[i, :] = average_embedding
+    if device is None:
+        return result_tensor
+    return result_tensor.to(device)
+
+
+def majority_element(arr):
+    """Finds the majority element in an array."""
+    counter = Counter(arr)
+    majority_count = max(counter.values())
+    for elem, count in counter.items():
+        if count == majority_count:
+            return elem
+
+
+def majority_elements_from_indices(x, rnd_nodes_for_excluded_users):
+    """
+    For each list in rnd_nodes_for_excluded_users, return the majority int of the indexes in x.
+
+    Parameters:
+    x (np.ndarray): A numpy array of integers.
+    rnd_nodes_for_excluded_users (list of lists): A list of lists, each containing indices of x.
+
+    Returns:
+    list: A list containing the majority integer for each list of indices in rnd_nodes_for_excluded_users.
+    """
+    majority_elements = []
+
+    for indices in rnd_nodes_for_excluded_users:
+        values = x[indices]
+        majority_element_value = majority_element(values)
+        majority_elements.append(majority_element_value)
+
+    return majority_elements
+
+
+def linear_forward_from_gnn(input_embed, gnn_model, gnn_type='gcn'):
+    out = gnn_model.conv1.lin(input_embed)
+    if gnn_model.conv1.bias is not None:
+        out = out + gnn_model.conv1.bias
+    out = gnn_model.conv2.lin(gnn_model.activation_fn(out))
+    if gnn_model.conv2.bias is not None:
+        out = out + gnn_model.conv2.bias
+    return torch.exp(gnn_model.output_fn(out))
+
+
+def enhance_predictions(node_features, rnd_nodes_for_excluded_users, device, model, pred):
+    # Generate predictions for excluded users
+    excluded_users_embeddings = average_embeddings(node_features, rnd_nodes_for_excluded_users, device)
+    excluded_users_preds = linear_forward_from_gnn(excluded_users_embeddings, model)
+    excluded_users_preds = excluded_users_preds.detach().cpu().numpy().flatten()
+    test_pred_with_excluded_users = np.concatenate([pred, excluded_users_preds])
+    return test_pred_with_excluded_users
+
+
+def get_node_features(data_dir, hyper_parameter_dict, graph, graph_name, number_of_nodes, latent_dim, device):
+    node_features = torch.rand(size=(number_of_nodes, latent_dim))
+    node_features_type = get_gnn_embeddings(data_dir, hyper_parameter_dict,
+                                            graph_name if graph_name != 'graph' else None)
+    mask = torch.zeros(node_features_type.shape, dtype=bool)
+    mask[list(graph.nodes())] = True
+    node_features[mask] = node_features_type[mask]
+    return node_features.to(device)

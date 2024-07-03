@@ -3,11 +3,13 @@ import os
 import mlflow
 import torch
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 from models import GNN
 from my_utils import set_seed, setup_env, move_data_to_device, get_gnn_embeddings, update_best_model_snapshot \
-    , save_metrics, get_edge_index, generate_nested_list, average_embeddings, linear_forward_from_gnn
+    , save_metrics, get_edge_index, generate_nested_list, average_embeddings, linear_forward_from_gnn, tensors_from_ids
+from llm_utils import TweetDataset
 from data_loader import create_data_loader
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
 from plot_utils import plot_losses
@@ -51,17 +53,17 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     edge_index = get_edge_index(datasets['graph'], data_dir)
     edge_index = edge_index.to(device)
     # Get node features
-    print('Computing GNN features ({})...'.format(train_hyperparams['input_embed']))
-    node_features = get_gnn_embeddings(data_dir, {'type': train_hyperparams['input_embed'],
-                                                  'trace_type': hyper_params['trace_type'],
-                                                  'latent_dim': model_hyperparams['latent_dim'],
-                                                  'seed': hyper_params['seed'], 'num_tweet_to_sample': 100,
-                                                  'num_nodes': datasets['graph'].number_of_nodes(),
-                                                  'graph': datasets['graph'], 'device': device,
-                                                  'dataset_name': dataset_name, 'base_dir': base_dir, 'num_cores': 8,
-                                                  'aggr_type': hyper_params['aggr_type'],
-                                                  'noderemapping': datasets['noderemapping'],
-                                                  'noderemapping_rev': datasets['noderemapping_rev']})
+    print('Computing LLM-based features ({})...'.format(train_hyperparams['input_embed']))
+    # Read tweets
+    control_df = pd.read_csv(data_dir / 'CONTROL_mostPop_tweet_texts.csv', index_col=0)
+    io_drivers_df = pd.read_csv(data_dir / 'IO_mostPop_tweet_texts.csv', index_col=0)
+    merged_df = pd.concat([control_df, io_drivers_df])
+    nodes_list = list(datasets['graph'].nodes())
+    nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
+    node_labels = datasets['labels']
+    tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, np.array([True]*len(nodes_list_raw_fmt)),
+                                 device)
+    node_features = tensors_from_ids(tweet_dataset.user_embeddings, nodes_list_raw_fmt)
     node_features = node_features.to(device)
     model_hyperparams['feature_dim'] = node_features.shape[1]
     # Create loggers
@@ -93,8 +95,12 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # Each dataset will have users who are not captured by the similarity network
     # We will represent each user as the average embedding of 5 random users.
     excluded_users_df = datasets['excluded_users']
-    rnd_nodes_for_excluded_users = generate_nested_list(N=excluded_users_df.userid.nunique(), K=5,
-                                                        M=node_features.shape[0])
+    nodes_list = excluded_users_df.userid.unique().tolist()
+    nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
+    node_labels = np.ones(excluded_users_df.userid.nunique())
+    tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, np.array([True] * len(node_labels)),
+                                 device)
+    node_features_excluded_users = tensors_from_ids(tweet_dataset.user_embeddings, nodes_list_raw_fmt).to(device)
     numpy_labels_with_excluded_users = np.concatenate([numpy_labels, np.ones(excluded_users_df.userid.nunique())])
     enhanced_tweetSim_mask = np.concatenate([tweetSim_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
     enhanced_fastRT_mask = np.concatenate([fastRT_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
@@ -148,8 +154,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
         with torch.no_grad():
             pred = model(node_features, edge_index).detach().cpu().numpy().flatten()
             # Generate predictions for excluded users
-            excluded_users_embeddings = average_embeddings(node_features, rnd_nodes_for_excluded_users, device)
-            excluded_users_preds = linear_forward_from_gnn(excluded_users_embeddings, model)
+            excluded_users_preds = linear_forward_from_gnn(node_features_excluded_users, model)
             excluded_users_preds = excluded_users_preds.detach().cpu().numpy().flatten()
             test_pred_with_excluded_users = np.concatenate([pred, excluded_users_preds])
 
@@ -224,7 +229,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run GNN model")
-    parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='cuba')
+    parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='UAE_sample')
     parser.add_argument('-seed', '--seed', type=int, help='Random seed', default=12121995)
     parser.add_argument('-train_perc', '--train', type=float, help='Training percentage', default=.6)
     parser.add_argument('-val_perc', '--val', type=float, help='Validation percentage', default=.2)
@@ -235,7 +240,7 @@ if __name__ == '__main__':
                         default=.99)
     # parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
     #                                                                          "otherwise return the fused")
-    parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='1')
+    parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='3')
     parser.add_argument('-gnn_aggr_fn', '--aggr_fn', type=str, help='GNN aggregation function', default='mean')
     parser.add_argument('-gnn_embed_type', '--embed_type', type=str, help='GNN Embedding Type', default='positional_rw')
     parser.add_argument('-num_epochs', '--epochs', type=int, help='#Training Epochs', default=1000)

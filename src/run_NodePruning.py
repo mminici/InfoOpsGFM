@@ -7,7 +7,7 @@ import networkx as nx
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred, get_best_threshold
-from my_utils import set_seed, setup_env, save_metrics
+from my_utils import set_seed, setup_env, save_metrics, generate_nested_list, majority_elements_from_indices
 from tqdm import tqdm
 
 DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
@@ -62,6 +62,9 @@ def main(dataset_name='cuba',
     # Create loggers
     val_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
     test_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
+    excluded_users_df = datasets['excluded_users']
+    rnd_nodes_for_excluded_users = generate_nested_list(N=excluded_users_df.userid.nunique(), K=5,
+                                                        M=datasets['graph'].number_of_nodes())
 
     for run_id in range(num_splits):
         print(f'Split {run_id + 1}/{num_splits}')
@@ -74,8 +77,12 @@ def main(dataset_name='cuba',
                                                 train_hyperparams["metric_to_optimize"])
         val_metrics = eval_pred(datasets['labels'], predicted_labels_list[best_val_threshold], unsupervised_mask)
         # Compute test statistics
-        test_metrics = eval_pred(datasets['labels'], predicted_labels_list[best_val_threshold],
-                                 datasets['splits'][run_id]['test'])
+        pred_for_excluded_users = majority_elements_from_indices(predicted_labels_list[best_val_threshold],
+                                                                 rnd_nodes_for_excluded_users)
+        test_pred = np.concatenate([predicted_labels_list[best_val_threshold], np.array(pred_for_excluded_users)])
+        test_mask = np.concatenate([datasets['splits'][run_id]['test'], np.array([True]*len(pred_for_excluded_users))])
+        labels_with_excluded_users = np.concatenate([datasets['labels'], np.ones(len(pred_for_excluded_users))])
+        test_metrics = eval_pred(labels_with_excluded_users, test_pred, test_mask)
         for metric_name in test_metrics:
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
             val_logger.update(metric_name, run_id, val_metrics[metric_name])
