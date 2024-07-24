@@ -8,6 +8,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch import nn
 
+from constants import filename_dict, CONTROL_FILE_IDX, IO_FILE_IDX
 from my_utils import set_seed, setup_env, move_data_to_device, update_best_model_snapshot, save_metrics
 from llm_utils import TweetDataset
 from data_loader import create_data_loader
@@ -44,9 +45,10 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # Transfer data to device
     datasets = move_data_to_device(datasets, device)
     # Read tweets
-    control_df = pd.read_csv(data_dir / 'CONTROL_mostPop_tweet_texts.csv', index_col=0)
-    io_drivers_df = pd.read_csv(data_dir / 'IO_mostPop_tweet_texts.csv', index_col=0)
-    merged_df = pd.concat([control_df, io_drivers_df])
+    num_mostPop = hyper_params['most_pop']
+    control_df = pd.read_csv(data_dir / f'CONTROL_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
+    iodrivers_df = pd.read_csv(data_dir / f'IO_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
+    merged_df = pd.concat([control_df, iodrivers_df])
     nodes_list = list(datasets['graph'].nodes())
     nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
     node_labels = datasets['labels']
@@ -66,12 +68,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
         # Datasets
         train_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, train_mask, device)
         val_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, val_mask, device)
-        excluded_users_df = datasets['excluded_users']
-        excluded_users = excluded_users_df.userid.unique().tolist()
-        test_users = nodes_list_raw_fmt + excluded_users
-        test_mask_enhanced = np.concatenate([test_mask, np.full((len(excluded_users),), fill_value=True)])
-        node_labels_enhanced = torch.cat([node_labels, torch.ones((len(excluded_users),)).to(device)])
-        test_dataset = TweetDataset(merged_df, test_users, node_labels_enhanced, test_mask_enhanced, device)
+        test_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, test_mask, device)
 
         # Dataloaders
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -189,7 +186,7 @@ if __name__ == '__main__':
     parser.add_argument('-num_splits', '--splits', type=int, help='Num of train-val-test splits', default=5)
     parser.add_argument('-tweet_sim_threshold', '--tsim_th', type=float, help='Threshold over which we retain an edge '
                                                                               'in tweet similarity network',
-                        default=.99)
+                        default=.7)
     # parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
     #                                                                          "otherwise return the fused")
     parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='1')
@@ -199,11 +196,17 @@ if __name__ == '__main__':
     parser.add_argument('-early_stopping_limit', '--early', type=int, help='Num patience steps', default=20)
     parser.add_argument('-check_loss_freq', '--check', type=int, help='Frequency validation check', default=1)
     parser.add_argument('-metric_to_optimize', '--val_metric', type=str, help='Metric to optimize', default='roc_auc')
+    parser.add_argument('-min_tweets', '--min_tweets', type=int,
+                        help='Minimum number of tweets a user needs to have to be included in the dataset',
+                        default=10)
+    parser.add_argument('-most_popular', '--most_pop', type=int,
+                        help='Number of most popular tweets to use to represent a user',
+                        default=5)
     args = parser.parse_args()
     # General hyperparameters
     hyper_parameters = {'train_perc': args.train, 'val_perc': args.val, 'test_perc': args.test,
                         'num_splits': args.splits, 'seed': args.seed,
-                        'tsim_th': args.tsim_th}
+                        'tsim_th': args.tsim_th, 'min_tweets': args, 'most_pop': args.most_pop}
     # optimization hyperparameters
     train_hyperparameters = {'num_epochs': args.epochs, 'learning_rate': args.lr,
                              'early_stopping_limit': args.early, 'check_loss_freq': args.check,

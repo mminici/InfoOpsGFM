@@ -7,8 +7,8 @@ import pandas as pd
 from tqdm import tqdm
 
 from models import GNN
-from my_utils import set_seed, setup_env, move_data_to_device, get_gnn_embeddings, update_best_model_snapshot \
-    , save_metrics, get_edge_index, generate_nested_list, average_embeddings, linear_forward_from_gnn, tensors_from_ids
+from my_utils import set_seed, setup_env, move_data_to_device, update_best_model_snapshot \
+    , save_metrics, get_edge_index, tensors_from_ids, handle_isolated_nodes
 from llm_utils import TweetDataset
 from data_loader import create_data_loader
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
@@ -47,21 +47,23 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     datasets = create_data_loader(data_dir, hyper_params['tsim_th'])
     # Transfer data to device
     datasets = move_data_to_device(datasets, device)
+    _, network = handle_isolated_nodes(datasets['graph'])
     # Get edge index representation
-    print('Get edge index from graph ({}N {}E)'.format(datasets['graph'].number_of_nodes(),
-                                                       datasets['graph'].number_of_edges()))
-    edge_index = get_edge_index(datasets['graph'], data_dir)
+    print('Get edge index from graph ({}N {}E)'.format(network.number_of_nodes(),
+                                                       network.number_of_edges()))
+    edge_index = get_edge_index(network, data_dir)
     edge_index = edge_index.to(device)
     # Get node features
-    print('Computing LLM-based features ({})...'.format(train_hyperparams['input_embed']))
+    print('Computing LLM-based features...')
     # Read tweets
-    control_df = pd.read_csv(data_dir / 'CONTROL_mostPop_tweet_texts.csv', index_col=0)
-    io_drivers_df = pd.read_csv(data_dir / 'IO_mostPop_tweet_texts.csv', index_col=0)
-    merged_df = pd.concat([control_df, io_drivers_df])
+    num_mostPop = hyper_params['most_pop']
+    control_df = pd.read_csv(data_dir / f'CONTROL_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
+    iodrivers_df = pd.read_csv(data_dir / f'IO_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
+    merged_df = pd.concat([control_df, iodrivers_df])
     nodes_list = list(datasets['graph'].nodes())
     nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
     node_labels = datasets['labels']
-    tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, np.array([True]*len(nodes_list_raw_fmt)),
+    tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, np.array([True] * len(nodes_list_raw_fmt)),
                                  device)
     node_features = tensors_from_ids(tweet_dataset.user_embeddings, nodes_list_raw_fmt)
     node_features = node_features.to(device)
@@ -92,23 +94,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     tweetSim_mask[list(datasets['tweetSim'].nodes())] = True
     # Create numpy version of labels for the validation phase
     numpy_labels = datasets['labels'].long().detach().cpu().numpy()
-    # Each dataset will have users who are not captured by the similarity network
-    # We will represent each user as the average embedding of 5 random users.
-    excluded_users_df = datasets['excluded_users']
-    nodes_list = excluded_users_df.userid.unique().tolist()
-    nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
-    node_labels = np.ones(excluded_users_df.userid.nunique())
-    tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, np.array([True] * len(node_labels)),
-                                 device)
-    node_features_excluded_users = tensors_from_ids(tweet_dataset.user_embeddings, nodes_list_raw_fmt).to(device)
-    numpy_labels_with_excluded_users = np.concatenate([numpy_labels, np.ones(excluded_users_df.userid.nunique())])
-    enhanced_tweetSim_mask = np.concatenate([tweetSim_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
-    enhanced_fastRT_mask = np.concatenate([fastRT_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
-    enhanced_coRT_mask = np.concatenate([coRT_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
-    enhanced_coURL_mask = np.concatenate([coURL_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
-    enhanced_hashSeq_mask = np.concatenate([hashSeq_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
-
-    # get training hyperparameters
+    # Get training hyperparameters
     num_epochs = train_hyperparams['num_epochs']
     metric_to_optimize = train_hyperparams['metric_to_optimize']
     for run_id in tqdm(range(hyper_params['num_splits']), 'Splits training'):
@@ -153,52 +139,42 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
         model.eval()
         with torch.no_grad():
             pred = model(node_features, edge_index).detach().cpu().numpy().flatten()
-            # Generate predictions for excluded users
-            excluded_users_preds = linear_forward_from_gnn(node_features_excluded_users, model)
-            excluded_users_preds = excluded_users_preds.detach().cpu().numpy().flatten()
-            test_pred_with_excluded_users = np.concatenate([pred, excluded_users_preds])
-
         # Evaluate perfomance on val set
         val_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['val'])
         for metric_name in val_metrics:
             val_logger.update(metric_name, run_id, val_metrics[metric_name])
         # Evaluate perfomance on test set
-        # test_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['test'])
-        test_mask = datasets['splits'][run_id]['test']
-        enhanced_test_mask = np.concatenate([test_mask, np.full((excluded_users_df.userid.nunique(),), fill_value=True)])
-        test_metrics = eval_pred(numpy_labels_with_excluded_users,
-                                 test_pred_with_excluded_users > 0.5,
-                                 enhanced_test_mask)
+        test_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['test'])
         for metric_name in test_metrics:
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
         # Evaluate perfomance on test set (only coRT nodes)
-        test_metrics_coRT = eval_pred(numpy_labels_with_excluded_users, test_pred_with_excluded_users > 0.5,
-                                      np.logical_and(enhanced_test_mask, enhanced_coRT_mask),
-                                      prob_pred=test_pred_with_excluded_users)
+        test_metrics_coRT = eval_pred(numpy_labels, pred > 0.5,
+                                      np.logical_and(datasets['splits'][run_id]['test'], coRT_mask),
+                                      prob_pred=pred)
         for metric_name in test_metrics_coRT:
             test_logger_coRT.update(metric_name, run_id, test_metrics_coRT[metric_name])
         # Evaluate perfomance on test set (only coURL nodes)
-        test_metrics_coURL = eval_pred(numpy_labels_with_excluded_users, test_pred_with_excluded_users > 0.5,
-                                       np.logical_and(enhanced_test_mask, enhanced_coURL_mask),
-                                       prob_pred=test_pred_with_excluded_users)
+        test_metrics_coURL = eval_pred(numpy_labels, pred > 0.5,
+                                       np.logical_and(datasets['splits'][run_id]['test'], coURL_mask),
+                                       prob_pred=pred)
         for metric_name in test_metrics_coURL:
             test_logger_coURL.update(metric_name, run_id, test_metrics_coURL[metric_name])
         # Evaluate perfomance on test set (only hashSeq nodes)
-        test_metrics_hashSeq = eval_pred(numpy_labels_with_excluded_users, test_pred_with_excluded_users > 0.5,
-                                         np.logical_and(enhanced_test_mask, enhanced_hashSeq_mask),
-                                         prob_pred=test_pred_with_excluded_users)
+        test_metrics_hashSeq = eval_pred(numpy_labels, pred > 0.5,
+                                         np.logical_and(datasets['splits'][run_id]['test'], hashSeq_mask),
+                                         prob_pred=pred)
         for metric_name in test_metrics_hashSeq:
             test_logger_hashSeq.update(metric_name, run_id, test_metrics_hashSeq[metric_name])
         # Evaluate perfomance on test set (only fastRT nodes)
-        test_metrics_fastRT = eval_pred(numpy_labels_with_excluded_users, test_pred_with_excluded_users > 0.5,
-                                        np.logical_and(enhanced_test_mask, enhanced_fastRT_mask),
-                                        prob_pred=test_pred_with_excluded_users)
+        test_metrics_fastRT = eval_pred(numpy_labels, pred > 0.5,
+                                        np.logical_and(datasets['splits'][run_id]['test'], fastRT_mask),
+                                        prob_pred=pred)
         for metric_name in test_metrics_fastRT:
             test_logger_fastRT.update(metric_name, run_id, test_metrics_fastRT[metric_name])
         # Evaluate perfomance on test set (only tweetSim nodes)
-        test_metrics_tweetSim = eval_pred(numpy_labels_with_excluded_users, test_pred_with_excluded_users > 0.5,
-                                          np.logical_and(enhanced_test_mask, enhanced_tweetSim_mask),
-                                          prob_pred=test_pred_with_excluded_users)
+        test_metrics_tweetSim = eval_pred(numpy_labels, pred > 0.5,
+                                                    np.logical_and(datasets['splits'][run_id]['test'], tweetSim_mask),
+                                                    prob_pred=pred)
         for metric_name in test_metrics_tweetSim:
             test_logger_tweetSim.update(metric_name, run_id, test_metrics_tweetSim[metric_name])
 
@@ -237,12 +213,11 @@ if __name__ == '__main__':
     parser.add_argument('-num_splits', '--splits', type=int, help='Num of train-val-test splits', default=5)
     parser.add_argument('-tweet_sim_threshold', '--tsim_th', type=float, help='Threshold over which we retain an edge '
                                                                               'in tweet similarity network',
-                        default=.99)
+                        default=.7)
     # parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
     #                                                                          "otherwise return the fused")
     parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='3')
     parser.add_argument('-gnn_aggr_fn', '--aggr_fn', type=str, help='GNN aggregation function', default='mean')
-    parser.add_argument('-gnn_embed_type', '--embed_type', type=str, help='GNN Embedding Type', default='positional_rw')
     parser.add_argument('-num_epochs', '--epochs', type=int, help='#Training Epochs', default=1000)
     parser.add_argument('-learning_rate', '--lr', type=float, help='Optimizer Learning Rate', default=1e-2)
     parser.add_argument('-early_stopping_limit', '--early', type=int, help='Num patience steps', default=20)
@@ -251,13 +226,20 @@ if __name__ == '__main__':
     parser.add_argument('-gnn_type', '--gnn', type=str, help='GNN Model type', default='gcn')
     parser.add_argument('-latent_dim', '--latent', type=int, help='Latent dimension', default=100)
     parser.add_argument('-dropout', '--dropout', type=float, help='Dropout frequency', default=.2)
+    parser.add_argument('-min_tweets', '--min_tweets', type=int,
+                        help='Minimum number of tweets a user needs to have to be included in the dataset',
+                        default=10)
+    parser.add_argument('-most_popular', '--most_pop', type=int,
+                        help='Number of most popular tweets to use to represent a user',
+                        default=5)
     args = parser.parse_args()
     # General hyperparameters
     hyper_parameters = {'train_perc': args.train, 'val_perc': args.val, 'test_perc': args.test,
                         'aggr_type': args.aggr_fn, 'num_splits': args.splits, 'seed': args.seed,
-                        'tsim_th': args.tsim_th, 'input_embed': args.embed_type, 'trace_type': 'all'}
+                        'tsim_th': args.tsim_th, 'trace_type': 'all',
+                        'min_tweets': args.min_tweets, 'most_pop': args.most_pop}
     # optimization hyperparameters
-    train_hyperparameters = {'input_embed': args.embed_type, 'num_epochs': args.epochs, 'learning_rate': args.lr,
+    train_hyperparameters = {'num_epochs': args.epochs, 'learning_rate': args.lr,
                              'early_stopping_limit': args.early, 'check_loss_freq': args.check,
                              'metric_to_optimize': args.val_metric, 'trace_type': 'all'}
     # model hyperparameters

@@ -4,7 +4,7 @@ import nltk
 import argparse
 from nltk.corpus import stopwords
 from my_utils import set_seed, setup_env
-from tweetSimUtil import msg_clean
+from tweetSimUtil import msg_clean, preprocess_text
 
 CONTROL_USERS_FILENAME = {'UAE_sample': 'control_driver_tweets_uae_082019.jsonl',
                           'cuba': 'control_driver_tweets_cuba_082020.jsonl'}
@@ -20,6 +20,7 @@ def main(seed, dataset_name, MIN_TWEETS, TOP_POPULAR_TWEETS, hyper_params):
            base_dir / 'data' / 'raw' / dataset_name / CONTROL_USERS_FILENAME[dataset_name])
     control_df = pd.read_json(base_dir / 'data' / 'raw' / dataset_name / CONTROL_USERS_FILENAME[dataset_name],
                               lines=True)
+    control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
     print('Importing IO drivers file...\n',
           base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name])
     iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name], sep=",")
@@ -29,10 +30,13 @@ def main(seed, dataset_name, MIN_TWEETS, TOP_POPULAR_TWEETS, hyper_params):
     userStats = iodrivers_df.userid.value_counts()
     userStats = userStats[(userStats >= MIN_TWEETS)]
     print(
-        f'There are {len(userStats)} users with at least {MIN_TWEETS} tweets (out of {iodrivers_df.userid.nunique()})')
+        f'There are IO {len(userStats)} users with at least {MIN_TWEETS} tweets (out of {iodrivers_df.userid.nunique()})')
 
     my_iodrivers_df = iodrivers_df.copy()
     my_iodrivers_df = my_iodrivers_df[my_iodrivers_df.userid.isin(userStats.index)]
+
+    # Preprocess texts
+    my_iodrivers_df = preprocess_text(my_iodrivers_df, 'tweet_text')
 
     # Clean tweet text
     # Downloading Stopwords
@@ -61,12 +65,11 @@ def main(seed, dataset_name, MIN_TWEETS, TOP_POPULAR_TWEETS, hyper_params):
     # Group by 'userid' and sort tweets by popularity within each group
     top_tweets = (merged_df.sort_values(['userid', 'popularity'], ascending=[True, False])
                   .groupby('userid')
-                  .head(5))
+                  .head(TOP_POPULAR_TWEETS))
 
     result_df = top_tweets.drop(columns=['popularity'])
-    result_df[['userid', 'clean_tweet']].to_csv(base_dir / 'data' / 'processed' / dataset_name / 'IO_mostPop_tweet_texts.csv')
+    result_df[['userid', 'clean_tweet']].to_csv(base_dir / 'data' / 'processed' / dataset_name / f'IO_mostPop{TOP_POPULAR_TWEETS}_tweet_texts.csv')
     # Repeat with control users
-    control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
     print('Total number of Control users: ', control_df.userid.nunique())
     userStats = control_df.userid.value_counts()
     userStats = userStats[(userStats >= MIN_TWEETS)]
@@ -74,6 +77,8 @@ def main(seed, dataset_name, MIN_TWEETS, TOP_POPULAR_TWEETS, hyper_params):
         f'There are {len(userStats)} CONTROL users with at least {MIN_TWEETS} tweets (out of {control_df.userid.nunique()})')
     my_control_df = control_df.copy()
     my_control_df = my_control_df[my_control_df.userid.isin(userStats.index)]
+    # Preprocess
+    my_control_df = preprocess_text(my_control_df, 'full_text')
     # Clean messages and remove short tweets
     my_control_df['clean_tweet'] = my_control_df['full_text'].astype(str).apply(
         lambda x: msg_clean(x, stopword=stopword))
@@ -111,18 +116,18 @@ def main(seed, dataset_name, MIN_TWEETS, TOP_POPULAR_TWEETS, hyper_params):
     # Drop the 'popularity' column to match the original DataFrame's structure
     result_df = top_tweets.drop(columns=['popularity'])
     result_df[['userid', 'clean_tweet']].to_csv(
-        base_dir / 'data' / 'processed' / dataset_name / 'CONTROL_mostPop_tweet_texts.csv')
+        base_dir / 'data' / 'processed' / dataset_name / f'CONTROL_mostPop{TOP_POPULAR_TWEETS}_tweet_texts.csv')
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="preprocess dataset to get all similarity networks")
     parser.add_argument('-dataset_name', '--dataset', type=str, default='cuba')
     parser.add_argument('-seed', '--seed', type=int, default=12121995)
-    parser.add_argument('-min_tweets', '--min_tweets', type=int, default=5)
+    parser.add_argument('-min_tweets', '--min_tweets', type=int, default=10)
     parser.add_argument('-top_popular_tweets', '--top_pop', type=int, default=5)
     # parser.add_argument('-f', '--flag', action='store_true', help='A boolean flag')
     args = parser.parse_args()
     hyper_parameters = {'train_perc': .6, 'val_perc': .2, 'test_perc': .2,
                         'aggr_type': 'mean', 'num_splits': 5, 'seed': args.seed,
-                        'tsim_th': .99}
+                        'tsim_th': .7, 'min_tweets': args.min_tweets}
     main(args.seed, args.dataset, args.min_tweets, args.top_pop, hyper_parameters)

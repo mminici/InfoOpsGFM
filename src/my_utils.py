@@ -58,6 +58,33 @@ def move_data_to_device(data, device):
     return data
 
 
+# Function to identify and handle isolated nodes
+def handle_isolated_nodes(graph):
+    isolated_nodes = []
+
+    for node in graph.nodes():
+        neighbors = list(graph.neighbors(node))
+        if (len(neighbors) == 0) or (len(neighbors) == 1 and neighbors[0] == node):
+            isolated_nodes.append(node)
+
+    # Identify non-isolated nodes
+    non_isolated_nodes = [node for node in graph.nodes() if node not in isolated_nodes]
+
+    # Connect isolated nodes to 5 random non-isolated nodes
+    for isolated_node in isolated_nodes:
+        if len(non_isolated_nodes) >= 5:
+            random_nodes = random.sample(non_isolated_nodes, 5)
+        else:
+            random_nodes = non_isolated_nodes
+
+        for target_node in random_nodes:
+            graph.add_edge(isolated_node, target_node, weight=1.0)
+
+        if graph.has_edge(isolated_node, isolated_node):
+            graph.remove_edge(isolated_node, isolated_node)
+    return isolated_nodes, graph
+
+
 def load_node2vec_embeddings(data_dir, hyper_parameters):
     seed = hyper_parameters['seed']
     latent_dim = hyper_parameters['latent_dim']
@@ -94,6 +121,17 @@ def create_spectral_features(
     svd.fit(sparse_adj_matrix)
     node_features = svd.components_.T
     return torch.FloatTensor(node_features)
+
+
+def remove_edge_attributes(graph):
+    # Create a copy of the graph to preserve the original graph
+    graph_copy = graph.copy()
+
+    # Iterate over all edges and remove their attributes
+    for u, v in graph_copy.edges():
+        graph_copy[u][v].clear()
+
+    return graph_copy
 
 
 def tensors_from_ids(tensor_dict, id_list):

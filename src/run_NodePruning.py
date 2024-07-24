@@ -7,7 +7,7 @@ import networkx as nx
 
 from data_loader import create_data_loader
 from model_eval import TestLogMetrics, eval_pred, get_best_threshold
-from my_utils import set_seed, setup_env, save_metrics, generate_nested_list, majority_elements_from_indices
+from my_utils import set_seed, setup_env, save_metrics, handle_isolated_nodes
 from tqdm import tqdm
 
 DEFAULT_HYPERPARAMETERS = {'train_perc': 0.7,
@@ -41,11 +41,13 @@ def main(dataset_name='cuba',
     print(data_dir)
     # Create data loader for signed datasets
     datasets = create_data_loader(data_dir, hyper_params['tsim_th'])
+    # Preprocessing: all isolated nodes must be rewired
+    _, network = handle_isolated_nodes(datasets['graph'])
     # Compute node centrality values
     # TODO: take the type of centrality as input parameter
-    centrality_values = nx.eigenvector_centrality(datasets['graph'])
+    centrality_values = nx.eigenvector_centrality(network)
     # Transform into a list
-    centrality_val_list = [-1] * datasets['graph'].number_of_nodes()
+    centrality_val_list = [-1] * network.number_of_nodes()
     for node_id in tqdm(centrality_values):
         centrality_val_list[node_id] = centrality_values[node_id]
     centrality_val_list = np.array(centrality_val_list)
@@ -54,7 +56,7 @@ def main(dataset_name='cuba',
     predicted_labels_list = []
     for percentile in tqdm(np.arange(0, 100, 0.5)):
         centrality_threshold = np.percentile(centrality_val_list, percentile)
-        predicted_labels = np.full(shape=datasets['graph'].number_of_nodes(), fill_value=1)
+        predicted_labels = np.full(shape=network.number_of_nodes(), fill_value=1)
         coordinated_users = np.where(centrality_val_list <= centrality_threshold)[0]
         predicted_labels[coordinated_users] = 0
         predicted_labels_list.append(np.copy(predicted_labels))
@@ -62,10 +64,6 @@ def main(dataset_name='cuba',
     # Create loggers
     val_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
     test_logger = TestLogMetrics(num_splits, ['accuracy', 'precision', 'f1_macro', 'f1_micro'])
-    excluded_users_df = datasets['excluded_users']
-    rnd_nodes_for_excluded_users = generate_nested_list(N=excluded_users_df.userid.nunique(), K=5,
-                                                        M=datasets['graph'].number_of_nodes())
-
     for run_id in range(num_splits):
         print(f'Split {run_id + 1}/{num_splits}')
         # Since this is an unsupervised baseline, we merge training and validation
@@ -77,12 +75,8 @@ def main(dataset_name='cuba',
                                                 train_hyperparams["metric_to_optimize"])
         val_metrics = eval_pred(datasets['labels'], predicted_labels_list[best_val_threshold], unsupervised_mask)
         # Compute test statistics
-        pred_for_excluded_users = majority_elements_from_indices(predicted_labels_list[best_val_threshold],
-                                                                 rnd_nodes_for_excluded_users)
-        test_pred = np.concatenate([predicted_labels_list[best_val_threshold], np.array(pred_for_excluded_users)])
-        test_mask = np.concatenate([datasets['splits'][run_id]['test'], np.array([True]*len(pred_for_excluded_users))])
-        labels_with_excluded_users = np.concatenate([datasets['labels'], np.ones(len(pred_for_excluded_users))])
-        test_metrics = eval_pred(labels_with_excluded_users, test_pred, test_mask)
+        test_metrics = eval_pred(datasets['labels'],
+                                 predicted_labels_list[best_val_threshold], datasets['splits'][run_id]['test'])
         for metric_name in test_metrics:
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
             val_logger.update(metric_name, run_id, val_metrics[metric_name])

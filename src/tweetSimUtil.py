@@ -59,25 +59,25 @@ def process_data(tweet_df):
     return tweet_df
 
 
-def preprocess_text(df):
+def preprocess_text(df, column_name='tweet_text'):
     # Cleaning tweets in en language
     # Removing RT Word from Messages
-    df['tweet_text'] = df['tweet_text'].str.lstrip('RT')
+    df[column_name] = df[column_name].str.lstrip('RT')
     # Removing selected punctuation marks from Messages
-    df['tweet_text'] = df['tweet_text'].str.replace(":", '')
-    df['tweet_text'] = df['tweet_text'].str.replace(";", '')
-    df['tweet_text'] = df['tweet_text'].str.replace(".", '')
-    df['tweet_text'] = df['tweet_text'].str.replace(",", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("!", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("&", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("-", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("_", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("$", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("/", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("?", '')
-    df['tweet_text'] = df['tweet_text'].str.replace("''", '')
+    df[column_name] = df[column_name].str.replace(":", '')
+    df[column_name] = df[column_name].str.replace(";", '')
+    df[column_name] = df[column_name].str.replace(".", '')
+    df[column_name] = df[column_name].str.replace(",", '')
+    df[column_name] = df[column_name].str.replace("!", '')
+    df[column_name] = df[column_name].str.replace("&", '')
+    df[column_name] = df[column_name].str.replace("-", '')
+    df[column_name] = df[column_name].str.replace("_", '')
+    df[column_name] = df[column_name].str.replace("$", '')
+    df[column_name] = df[column_name].str.replace("/", '')
+    df[column_name] = df[column_name].str.replace("?", '')
+    df[column_name] = df[column_name].str.replace("''", '')
     # Lowercase
-    df['tweet_text'] = df['tweet_text'].str.lower()
+    df[column_name] = df[column_name].str.lower()
 
     return df
 
@@ -193,6 +193,7 @@ def textSim(control, treated, outputDir, stopword, cudaId='1'):
 
     pos_en_df_all['tweet_time'] = pos_en_df_all['tweetid'].apply(lambda x: get_tweet_timestamp(x))
     neg_en_df_all['tweet_time'] = neg_en_df_all['tweetid'].apply(lambda x: get_tweet_timestamp(x))
+    neg_en_df_all['userid'] = neg_en_df_all['user'].apply(lambda x: np.int64(x['id']))
 
     date = pos_en_df_all['tweet_time'].min().date()
     finalDate = pos_en_df_all['tweet_time'].max().date()

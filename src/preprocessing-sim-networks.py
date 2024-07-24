@@ -2,6 +2,7 @@ import argparse
 import pathlib
 import pickle
 import pandas as pd
+import numpy as np
 import networkx as nx
 
 import preprocessing_util
@@ -45,7 +46,7 @@ IO_USERS_FILENAME = {'UAE_sample': 'uae_082019_tweets_csv_unhashed.csv',
                      'cuba': 'cuba_082020_tweets_csv_unhashed.csv'}
 
 
-def main(dataset_name):
+def main(dataset_name, device_id):
     # Basic definitions
     base_dir = pathlib.Path.cwd().parent
     processed_datadir = base_dir / 'data' / 'processed'
@@ -61,25 +62,35 @@ def main(dataset_name):
     iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name], sep=",")
     print('Get CoRetweet network...')
     coRT = preprocessing_util.coRetweet(control_df, iodrivers_df)
-    coRT = correct_nodeIDs(coRT)
+    # coRT = correct_nodeIDs(coRT)
     save_network(coRT, data_dir / 'coRT.pkl')
     print('Get CoURL network...')
     coURL = preprocessing_util.coURL(control_df, iodrivers_df)
-    coURL = correct_nodeIDs(coURL)
+    # coURL = correct_nodeIDs(coURL)
     save_network(coURL, data_dir / 'coURL.pkl')
     print('Get HashtagSeq network...')
     hashSeq = preprocessing_util.hashSeq(control_df, iodrivers_df, minHashtags=5)
-    hashSeq = correct_nodeIDs(hashSeq)
+    # hashSeq = correct_nodeIDs(hashSeq)
     save_network(hashSeq, data_dir / 'hashSeq.pkl')
     print('Get fastRetweet network...')
     fastRT = preprocessing_util.fastRetweet(control_df, iodrivers_df, timeInterval=10)
-    fastRT = correct_nodeIDs(fastRT)
+    # fastRT = correct_nodeIDs(fastRT)
     save_network(fastRT, data_dir / 'fastRT.pkl')
     print('Get tweetSimilarity network...')
     tweetSimPath = data_dir / 'tweetSim'
     tweetSimPath.mkdir(parents=True, exist_ok=True)
-    tweetSim = tweetSimUtil.getTweetSimNetwork(control_df, iodrivers_df, outputDir=tweetSimPath)
-    tweetSim = correct_nodeIDs(tweetSim)
+    # Applying node filtering
+    # At the moment, we exclude all users having less than 10 tweets
+    control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
+    # Grouping by 'userid' and filtering those with at least 5 rows
+    io_drivers_userids = iodrivers_df.groupby('userid').filter(lambda x: len(x) >= 10)[
+        'userid'].unique()
+    control_userids = control_df.groupby('userid').filter(lambda x: len(x) >= 10)['userid'].unique()
+    control_df = control_df[control_df.userid.isin(control_userids)]
+    del control_df['userid']
+    iodrivers_df = iodrivers_df[iodrivers_df.userid.isin(io_drivers_userids)]
+    tweetSim = tweetSimUtil.getTweetSimNetwork(control_df, iodrivers_df, outputDir=tweetSimPath, cudaId=device_id)
+    # tweetSim = correct_nodeIDs(tweetSim)
     save_network(tweetSim, data_dir / 'tweetSim.pkl')
     print('Deriving fused network...')
     fusedNet = coRT.copy()
@@ -93,6 +104,7 @@ def main(dataset_name):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="preprocess dataset to get all similarity networks")
     parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset')
+    parser.add_argument('-device_id', '--device', type=str, help='Cuda device')
     # parser.add_argument('-f', '--flag', action='store_true', help='A boolean flag')
     args = parser.parse_args()
-    main(args.dataset_name)
+    main(args.dataset, args.device)
