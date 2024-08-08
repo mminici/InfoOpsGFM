@@ -192,8 +192,6 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
         pseudo_labels, datasets['splits'][run_id]['train'] = generate_tensors(network, hyper_params['pseudo_label'])
         pseudo_labels = pseudo_labels.to(device)
         datasets['splits'][run_id]['train'] = datasets['splits'][run_id]['train'].to(device)
-        # Transform into a list
-        centrality_val_list = [-1] * network.number_of_nodes()
         for epoch in range(num_epochs):
             if early_stopping_cnt > train_hyperparams["early_stopping_limit"]:
                 break
@@ -312,7 +310,7 @@ if __name__ == '__main__':
     parser.add_argument('-metric_to_optimize', '--val_metric', type=str, help='Metric to optimize', default='f1_macro')
     parser.add_argument('-gnn_type', '--gnn', type=str, help='GNN Model type', default='gcn')
     parser.add_argument('-gnn_embed_type', '--embed_type', type=str, help='GNN Embedding Type', default='positional_degree')
-    parser.add_argument('-latent_dim', '--latent', type=int, help='Latent dimension', default=100)
+    parser.add_argument('-latent_dim', '--latent', type=int, help='Latent dimension', default=128)
     parser.add_argument('-dropout', '--dropout', type=float, help='Dropout frequency', default=.2)
     parser.add_argument('-min_tweets', '--min_tweets', type=int,
                         help='Minimum number of tweets a user needs to have to be included in the dataset',

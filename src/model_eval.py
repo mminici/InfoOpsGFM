@@ -11,7 +11,10 @@ def eval_pred(ground_truth, pred, mask, prob_pred=None):
                         'accuracy': metrics.accuracy_score(ground_truth[mask], pred[mask]),
                         'precision': metrics.precision_score(ground_truth[mask], pred[mask])}
         if prob_pred is not None:
-            metrics_dict['roc_auc'] = metrics.roc_auc_score(ground_truth[mask], prob_pred[mask])
+            if len(np.unique(ground_truth[mask])) > 1:
+                metrics_dict['roc_auc'] = metrics.roc_auc_score(ground_truth[mask], prob_pred[mask])
+            else:
+                metrics_dict['roc_auc'] = np.nan
     else:
         metrics_dict = {'f1_macro': None,
                         'f1_micro': None,

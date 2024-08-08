@@ -40,7 +40,8 @@ def main(dataset_name='cuba',
     _, base_dir, interim_data_dir, data_dir = setup_env('', dataset_name, hyper_params)
     print(data_dir)
     # Create data loader for signed datasets
-    datasets = create_data_loader(data_dir, hyper_params['tsim_th'])
+    datasets = create_data_loader(data_dir, hyper_params['tsim_th'], tr_perc=hyper_parameters['train_perc'],
+                                  undersampling=None)
     # Preprocessing: all isolated nodes must be rewired
     _, network = handle_isolated_nodes(datasets['graph'])
     # Compute node centrality values
@@ -96,7 +97,7 @@ if __name__ == '__main__':
     parser.add_argument('-num_splits', '--splits', type=int, help='Num of train-val-test splits', default=5)
     parser.add_argument('-tweet_sim_threshold', '--tsim_th', type=float, help='Threshold over which we retain an edge '
                                                                               'in tweet similarity network',
-                        default=.99)
+                        default=.7)
     parser.add_argument('-metric_to_optimize', '--val_metric', type=str, help='Metric to optimize', default='f1_macro')
     args = parser.parse_args()
     # Run input parameters

@@ -37,14 +37,17 @@ def average_embedding(user_embeddings):
 
 # Custom Dataset
 class TweetDataset(Dataset):
-    def __init__(self, dataframe, userids, labels, mask, device):
+    def __init__(self, dataframe, userids, labels, mask, device, pathToUserEmbed=None):
         self.userids = [userids[i] for i in range(len(userids)) if mask[i]]
         self.dataframe = dataframe[dataframe['userid'].isin(self.userids)]
         self.labels = labels[mask].float()
         self.encoder = SentenceTransformer('stsb-xlm-r-multilingual')
         self.encoder = self.encoder.to(device)
         self.mask = mask
-        self.user_embeddings = self.compute_user_embeddings(device)
+        if pathToUserEmbed is None:
+            self.user_embeddings = self.compute_user_embeddings(device)
+        else:
+            self.user_embeddings = load_user_embeddings(pathToUserEmbed)
 
     def compute_user_embeddings(self, device):
         user_embeddings = {}

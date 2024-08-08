@@ -5,6 +5,7 @@ import networkx as nx
 import pandas as pd
 import numpy as np
 
+import my_utils
 from data_loader import load_dataset
 from sklearn.model_selection import train_test_split
 
@@ -14,11 +15,12 @@ filename_dict = {'UAE_sample': ['control_driver_tweets_uae_082019.jsonl', 'uae_0
                  'cuba': ['control_driver_tweets_cuba_082020.jsonl', 'cuba_082020_tweets_csv_unhashed.csv']}
 
 
-def save_dataset(data_dir, data, filter_th, tr_perc, undersampling):
+def save_dataset(data_dir, data, filter_th, tr_perc, undersampling=None):
     fname = f'{filter_th}_{DATASET_FILENAME}'
     if tr_perc != 0.6:
         fname = f'{filter_th}_{DATASET_FILENAME}_{tr_perc}'
-    fname += f'_{undersampling}U'
+    if undersampling is not None:
+        fname += f'_{undersampling}U'
     with open(data_dir / fname, 'wb') as file:
         pickle.dump(data, file)
 
@@ -100,6 +102,7 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
     data_dir = processed_datadir / dataset_name
     data_dir.mkdir(parents=True, exist_ok=True)
     if under_sampling is not None:
+        under_sampling = float(under_sampling)
         # Open the dataset
         dataset = load_dataset(data_dir, tweet_sim_threshold, train_perc, None)
         for run_id in dataset['splits']:
@@ -127,15 +130,26 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
     fusedNet = nx.compose(fusedNet, coURL)
     fusedNet = nx.compose(fusedNet, coRT)
     # Applying node filtering
-    # At the moment, we exclude all users having less than 10 tweets
-    print(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][CONTROL_FILE_IDX])
-    control_df = pd.read_json(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][CONTROL_FILE_IDX],
-                              lines=True)
-    control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
-    print('Importing IO drivers file...')
-    print(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][IO_FILE_IDX])
-    iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][IO_FILE_IDX],
-                               sep=",")
+    if dataset_name in ['UAE_sample', 'cuba']:
+        # At the moment, we exclude all users having less than 10 tweets
+        print(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][CONTROL_FILE_IDX])
+        control_df = pd.read_json(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][CONTROL_FILE_IDX],
+                                  lines=True)
+        control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
+        print('Importing IO drivers file...')
+        print(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][IO_FILE_IDX])
+        iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][IO_FILE_IDX],
+                                   sep=",")
+    else:
+        print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
+        control_df = my_utils.read_compressed_pickle(
+            base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
+        control_df['userid'] = control_df['userid'].apply(lambda x: np.int64(x))
+        print('Importing IO drivers file...')
+        print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
+        iodrivers_df = my_utils.read_compressed_pickle(
+            base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
+
     # Grouping by 'userid' and filtering those with at least 5 rows
     io_drivers_userids = iodrivers_df.groupby('userid').filter(lambda x: len(x) >= min_tweets)['userid'].unique().astype(str)
     control_userids = control_df.groupby('userid').filter(lambda x: len(x) >= min_tweets)['userid'].unique().astype(str)
@@ -180,6 +194,8 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
                 'noderemapping_rev': noderemapping_rev, 'labels': np.copy(node_labels), 'splits': {}}
     # Perform train-val-test split
     print(f'Performing train-val-test split (tr, val, test: {train_perc}, {val_perc}, {test_perc})...')
+    node_labels = node_labels.astype(int)
+    print(f'num io: {node_labels.sum()}')
     for run_id in range(num_splits):
         x_train, x_test, _, y_test = train_test_split(range(len(node_labels)), node_labels,
                                                       test_size=1 - train_perc,
@@ -189,10 +205,18 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
                                                stratify=y_test)
         run_train_mask = np.full(fill_value=False, shape=len(node_labels))
         run_train_mask[x_train] = True
+        print('split ', run_id)
+        print(f'train length: {run_train_mask.sum()}')
+        print(f'num io in train: {node_labels[run_train_mask].sum()}')
         run_val_mask = np.full(fill_value=False, shape=len(node_labels))
         run_val_mask[x_val] = True
+        print(f'val length: {run_val_mask.sum()}')
+        print(f'num io in val: {node_labels[run_val_mask].sum()}')
         run_test_mask = np.full(fill_value=False, shape=len(node_labels))
         run_test_mask[x_test] = True
+        print(f'test length: {run_test_mask.sum()}')
+        print(f'num io in test: {node_labels[run_test_mask].sum()}')
+        print()
         # Store training, val and test masks
         datasets['splits'][run_id] = {'train': np.copy(run_train_mask),
                                       'val': np.copy(run_val_mask),
@@ -216,6 +240,6 @@ if __name__ == '__main__':
                         default=10)
     parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
                                                                              "otherwise return the fused")
-    parser.add_argument('-under_sampling', '--under', type=float, help='undersampling percentage', default=None)
+    parser.add_argument('-under_sampling', '--under', help='undersampling percentage', default=None)
     args = parser.parse_args()
     main(args.dataset, args.train, args.val, args.test, args.tsim_th, args.splits, args.min_tweets, args.under)

@@ -6,7 +6,10 @@ import numpy as np
 import networkx as nx
 
 import preprocessing_util
+import preprocessing_util_NEW
 import tweetSimUtil
+import tweetSimUtil_NEW
+import my_utils
 
 
 # Function to check if a node ID is a valid numeric string
@@ -54,26 +57,39 @@ def main(dataset_name, device_id):
     data_dir.mkdir(parents=True, exist_ok=True)
 
     print('Importing control file...')
-    print(base_dir / 'data' / 'raw' / dataset_name / CONTROL_USERS_FILENAME[dataset_name])
-    control_df = pd.read_json(base_dir / 'data' / 'raw' / dataset_name / CONTROL_USERS_FILENAME[dataset_name],
-                              lines=True)
-    print('Importing IO drivers file...')
-    print(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name])
-    iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name], sep=",")
+    if dataset_name not in ['UAE_sample', 'cuba']:
+        print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
+        control_df = my_utils.read_compressed_pickle(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
+        print('Importing IO drivers file...')
+        print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
+        iodrivers_df = my_utils.read_compressed_pickle(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
+    else:
+        print(base_dir / 'data' / 'raw' / dataset_name / CONTROL_USERS_FILENAME[dataset_name])
+        control_df = pd.read_json(base_dir / 'data' / 'raw' / dataset_name / CONTROL_USERS_FILENAME[dataset_name],
+                                  lines=True)
+        print('Importing IO drivers file...')
+        print(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name])
+        iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / IO_USERS_FILENAME[dataset_name], sep=",")
+    if dataset_name in ['UAE_sample', 'cuba']:
+        preprocessing_module = preprocessing_util
+        tweetSim_module = tweetSimUtil
+    else:
+        preprocessing_module = preprocessing_util_NEW
+        tweetSim_module = tweetSimUtil_NEW
     print('Get CoRetweet network...')
-    coRT = preprocessing_util.coRetweet(control_df, iodrivers_df)
+    coRT = preprocessing_module.coRetweet(control_df, iodrivers_df)
     # coRT = correct_nodeIDs(coRT)
     save_network(coRT, data_dir / 'coRT.pkl')
     print('Get CoURL network...')
-    coURL = preprocessing_util.coURL(control_df, iodrivers_df)
+    coURL = preprocessing_module.coURL(control_df, iodrivers_df)
     # coURL = correct_nodeIDs(coURL)
     save_network(coURL, data_dir / 'coURL.pkl')
     print('Get HashtagSeq network...')
-    hashSeq = preprocessing_util.hashSeq(control_df, iodrivers_df, minHashtags=5)
+    hashSeq = preprocessing_module.hashSeq(control_df, iodrivers_df, minHashtags=5)
     # hashSeq = correct_nodeIDs(hashSeq)
     save_network(hashSeq, data_dir / 'hashSeq.pkl')
     print('Get fastRetweet network...')
-    fastRT = preprocessing_util.fastRetweet(control_df, iodrivers_df, timeInterval=10)
+    fastRT = preprocessing_module.fastRetweet(control_df, iodrivers_df, timeInterval=10)
     # fastRT = correct_nodeIDs(fastRT)
     save_network(fastRT, data_dir / 'fastRT.pkl')
     print('Get tweetSimilarity network...')
@@ -81,15 +97,20 @@ def main(dataset_name, device_id):
     tweetSimPath.mkdir(parents=True, exist_ok=True)
     # Applying node filtering
     # At the moment, we exclude all users having less than 10 tweets
-    control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
+    if dataset_name in ['UAE_sample', 'cuba']:
+        control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
+    else:
+        control_df['userid'] = control_df['userid'].apply(lambda x: np.int64(x))
+        iodrivers_df['userid'] = iodrivers_df['userid'].apply(lambda x: np.int64(x))
     # Grouping by 'userid' and filtering those with at least 5 rows
     io_drivers_userids = iodrivers_df.groupby('userid').filter(lambda x: len(x) >= 10)[
         'userid'].unique()
     control_userids = control_df.groupby('userid').filter(lambda x: len(x) >= 10)['userid'].unique()
     control_df = control_df[control_df.userid.isin(control_userids)]
-    del control_df['userid']
+    if dataset_name in ['UAE_sample', 'cuba']:
+        del control_df['userid']
     iodrivers_df = iodrivers_df[iodrivers_df.userid.isin(io_drivers_userids)]
-    tweetSim = tweetSimUtil.getTweetSimNetwork(control_df, iodrivers_df, outputDir=tweetSimPath, cudaId=device_id)
+    tweetSim = tweetSim_module.getTweetSimNetwork(control_df, iodrivers_df, outputDir=tweetSimPath, cudaId=device_id)
     # tweetSim = correct_nodeIDs(tweetSim)
     save_network(tweetSim, data_dir / 'tweetSim.pkl')
     print('Deriving fused network...')

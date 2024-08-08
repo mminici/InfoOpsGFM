@@ -3,9 +3,11 @@ import random
 import shutil
 import pickle
 import uuid
+import gzip
 
 import numpy as np
 import networkx as nx
+import pandas as pd
 import scipy.sparse as sp
 import torch
 import mlflow
@@ -381,3 +383,28 @@ def get_node_features(data_dir, hyper_parameter_dict, graph, graph_name, number_
     mask[list(graph.nodes())] = True
     node_features[mask] = node_features_type[mask]
     return node_features.to(device)
+
+
+class NotDataFrameError(Exception):
+    """Custom exception for non-DataFrame objects."""
+    pass
+
+
+def read_compressed_pickle(file_path):
+    """
+    Reads a compressed pickle file and checks if it is a pandas DataFrame.
+
+    Parameters:
+    file_path (str): The path to the compressed pickle file.
+
+    Returns:
+    pd.DataFrame: The DataFrame read from the file.
+
+    Raises:
+    NotDataFrameError: If the content is not a pandas DataFrame.
+    """
+    with gzip.open(file_path, 'rb') as f:
+        data = pickle.load(f)
+        if not isinstance(data, pd.DataFrame):
+            raise NotDataFrameError(f"The file {file_path} does not contain a pandas DataFrame.")
+        return data
