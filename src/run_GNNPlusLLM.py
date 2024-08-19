@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 import mlflow
 import torch
 import numpy as np
@@ -9,7 +10,6 @@ from tqdm import tqdm
 from models import GNN
 from my_utils import set_seed, setup_env, move_data_to_device, update_best_model_snapshot \
     , save_metrics, get_edge_index, tensors_from_ids, handle_isolated_nodes
-from llm_utils import TweetDataset
 from data_loader import create_data_loader
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
 from plot_utils import plot_losses
@@ -44,7 +44,8 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     device, base_dir, interim_data_dir, data_dir = setup_env(device_id, dataset_name, hyper_params)
     print(data_dir)
     # Create data loader for signed datasets
-    datasets = create_data_loader(data_dir, hyper_params['tsim_th'])
+    datasets = create_data_loader(data_dir, hyper_params['tsim_th'],
+                                  hyper_params['train_perc'], hyper_params['undersampling'])
     # Transfer data to device
     datasets = move_data_to_device(datasets, device)
     _, network = handle_isolated_nodes(datasets['graph'])
@@ -57,15 +58,11 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     print('Computing LLM-based features...')
     # Read tweets
     num_mostPop = hyper_params['most_pop']
-    control_df = pd.read_csv(data_dir / f'CONTROL_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
-    iodrivers_df = pd.read_csv(data_dir / f'IO_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
-    merged_df = pd.concat([control_df, iodrivers_df])
-    nodes_list = list(datasets['graph'].nodes())
-    nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
-    node_labels = datasets['labels']
-    tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels, np.array([True] * len(nodes_list_raw_fmt)),
-                                 device)
-    node_features = tensors_from_ids(tweet_dataset.user_embeddings, nodes_list_raw_fmt)
+    if (data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt').exists():
+        node_features = torch.load(data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt')
+    else:
+        path = str(data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt')
+        raise Exception(f'path {path} does not exist')
     node_features = node_features.to(device)
     model_hyperparams['feature_dim'] = node_features.shape[1]
     # Create loggers
@@ -232,12 +229,14 @@ if __name__ == '__main__':
     parser.add_argument('-most_popular', '--most_pop', type=int,
                         help='Number of most popular tweets to use to represent a user',
                         default=5)
+    parser.add_argument('-under_sampling', '--under', help='undersampling percentage', default=None)
     args = parser.parse_args()
     # General hyperparameters
     hyper_parameters = {'train_perc': args.train, 'val_perc': args.val, 'test_perc': args.test,
                         'aggr_type': args.aggr_fn, 'num_splits': args.splits, 'seed': args.seed,
                         'tsim_th': args.tsim_th, 'trace_type': 'all',
-                        'min_tweets': args.min_tweets, 'most_pop': args.most_pop}
+                        'min_tweets': args.min_tweets, 'most_pop': args.most_pop,
+                        'undersampling': float(args.under) if args.under is not None else None}
     # optimization hyperparameters
     train_hyperparameters = {'num_epochs': args.epochs, 'learning_rate': args.lr,
                              'early_stopping_limit': args.early, 'check_loss_freq': args.check,

@@ -7,9 +7,9 @@ from my_utils import get_edge_index_from_networkx, remove_edge_attributes
 from torch_geometric.utils import homophily
 
 # Hyper parameters
-dataset_name = 'UAE_sample'
+dataset_name = 'cuba'
 filter_th = 0.7
-print_subnets = True
+print_subnets = False
 
 
 def remove_isolated_and_self_loop_nodes(graph):

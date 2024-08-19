@@ -3,13 +3,11 @@ import os
 import mlflow
 import torch
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
 
 from models import GNN
 from my_utils import set_seed, setup_env, move_data_to_device, update_best_model_snapshot \
-    , save_metrics, get_edge_index, tensors_from_ids, handle_isolated_nodes, get_gnn_embeddings
-from llm_utils import TweetDataset
+    , save_metrics, get_edge_index, handle_isolated_nodes, get_gnn_embeddings
 from data_loader import create_data_loader
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
 from plot_utils import plot_losses
@@ -61,30 +59,19 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     if (data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt').exists():
         node_features = torch.load(data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt')
     else:
-        control_df = pd.read_csv(data_dir / f'CONTROL_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
-        iodrivers_df = pd.read_csv(data_dir / f'IO_mostPop{num_mostPop}_tweet_texts.csv', index_col=0)
-        merged_df = pd.concat([control_df, iodrivers_df])
-        nodes_list = list(datasets['graph'].nodes())
-        nodes_list_raw_fmt = list(map(lambda x: np.int64(datasets['noderemapping_rev'][x]), nodes_list))
-        node_labels = datasets['labels']
-        tweet_dataset = TweetDataset(merged_df, nodes_list_raw_fmt, node_labels,
-                                     np.array([True] * len(nodes_list_raw_fmt)),
-                                     device)
-        node_features = tensors_from_ids(tweet_dataset.user_embeddings, nodes_list_raw_fmt)
-        torch.save(node_features, data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt')
+        path = str(data_dir / f'sbert_nodeattributes_mostPop{num_mostPop}.pt')
+        raise Exception(f'path {path} does not exist')
     node_features = node_features.to(device)
     print('Computing GNN features ({})...'.format(train_hyperparams['input_embed']))
     struct_node_features = get_gnn_embeddings(data_dir, {'type': train_hyperparams['input_embed'],
                                                          'trace_type': hyper_params['trace_type'],
                                                          'latent_dim': model_hyperparams['latent_dim'],
-                                                         'seed': hyper_params['seed'], 'num_tweet_to_sample': 100,
+                                                         'seed': hyper_params['seed'],
                                                          'num_nodes': network.number_of_nodes(),
                                                          'graph': network, 'device': device,
                                                          'dataset_name': dataset_name, 'base_dir': base_dir,
                                                          'num_cores': 8,
-                                                         'aggr_type': hyper_params['aggr_type'],
-                                                         'noderemapping': datasets['noderemapping'],
-                                                         'noderemapping_rev': datasets['noderemapping_rev']})
+                                                         'aggr_type': hyper_params['aggr_type']})
     struct_node_features = struct_node_features.to(device)
     # Concatenate Structural and Node Features
     node_features = torch.cat((node_features, struct_node_features), 1)

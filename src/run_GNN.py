@@ -1,6 +1,5 @@
 import argparse
 import os
-import random
 import mlflow
 import torch
 import numpy as np
@@ -43,28 +42,27 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     device, base_dir, interim_data_dir, data_dir = setup_env(device_id, dataset_name, hyper_params)
     print(data_dir)
     # Create data loader for signed datasets
-    datasets = create_data_loader(data_dir, hyper_params['tsim_th'])
+    datasets = create_data_loader(data_dir, hyper_params['tsim_th'],
+                                  hyper_params['train_perc'], hyper_params['undersampling'])
     # Transfer data to device
     datasets = move_data_to_device(datasets, device)
-    # Get edge index representation
-    print('Get edge index from graph ({}N {}E)'.format(datasets['graph'].number_of_nodes(),
-                                                       datasets['graph'].number_of_edges()))
-    # Preprocessing: all isolated nodes must be rewired
     _, network = handle_isolated_nodes(datasets['graph'])
+    # Get edge index representation
+    print('Get edge index from graph ({}N {}E)'.format(network.number_of_nodes(),
+                                                       network.number_of_edges()))
     edge_index = get_edge_index(network, data_dir)
     edge_index = edge_index.to(device)
     # Get node features
     print('Computing GNN features ({})...'.format(train_hyperparams['input_embed']))
     node_features = get_gnn_embeddings(data_dir, {'type': train_hyperparams['input_embed'],
-                                                  'trace_type': hyper_params['trace_type'],
-                                                  'latent_dim': model_hyperparams['latent_dim'],
-                                                  'seed': hyper_params['seed'], 'num_tweet_to_sample': 100,
-                                                  'num_nodes': network.number_of_nodes(),
-                                                  'graph': network, 'device': device,
-                                                  'dataset_name': dataset_name, 'base_dir': base_dir, 'num_cores': 8,
-                                                  'aggr_type': hyper_params['aggr_type'],
-                                                  'noderemapping': datasets['noderemapping'],
-                                                  'noderemapping_rev': datasets['noderemapping_rev']})
+                                                         'trace_type': hyper_params['trace_type'],
+                                                         'latent_dim': model_hyperparams['latent_dim'],
+                                                         'seed': hyper_params['seed'],
+                                                         'num_nodes': network.number_of_nodes(),
+                                                         'graph': network, 'device': device,
+                                                         'dataset_name': dataset_name, 'base_dir': base_dir,
+                                                         'num_cores': 8,
+                                                         'aggr_type': hyper_params['aggr_type']})
     node_features = node_features.to(device)
     model_hyperparams['feature_dim'] = node_features.shape[1]
     # Create loggers
@@ -213,7 +211,7 @@ if __name__ == '__main__':
     parser.add_argument('-num_splits', '--splits', type=int, help='Num of train-val-test splits', default=5)
     parser.add_argument('-tweet_sim_threshold', '--tsim_th', type=float, help='Threshold over which we retain an edge '
                                                                               'in tweet similarity network',
-                        default=.99)
+                        default=.7)
     # parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
     #                                                                          "otherwise return the fused")
     parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='1')
@@ -227,11 +225,14 @@ if __name__ == '__main__':
     parser.add_argument('-gnn_type', '--gnn', type=str, help='GNN Model type', default='gcn')
     parser.add_argument('-latent_dim', '--latent', type=int, help='Latent dimension', default=100)
     parser.add_argument('-dropout', '--dropout', type=float, help='Dropout frequency', default=.2)
+    parser.add_argument('-under_sampling', '--under', help='undersampling percentage', default=None)
     args = parser.parse_args()
     # General hyperparameters
     hyper_parameters = {'train_perc': args.train, 'val_perc': args.val, 'test_perc': args.test,
                         'aggr_type': args.aggr_fn, 'num_splits': args.splits, 'seed': args.seed,
-                        'tsim_th': args.tsim_th, 'input_embed': args.embed_type, 'trace_type': 'all'}
+                        'tsim_th': args.tsim_th, 'input_embed': args.embed_type, 'trace_type': 'all',
+                        'undersampling': float(args.under) if args.under is not None else None
+                        }
     # optimization hyperparameters
     train_hyperparameters = {'input_embed': args.embed_type, 'num_epochs': args.epochs, 'learning_rate': args.lr,
                              'early_stopping_limit': args.early, 'check_loss_freq': args.check,

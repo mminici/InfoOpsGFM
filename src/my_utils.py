@@ -19,7 +19,6 @@ from torch_geometric.utils import from_networkx
 from torch_geometric.data import HeteroData
 from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
 from sklearn.decomposition import TruncatedSVD
-from text_embed_util import get_tweet_embed
 
 
 def set_seed(seed):
@@ -212,11 +211,6 @@ def get_gnn_embeddings(data_dir, hyper_parameters, type=None):
         graph_data = from_networkx(hyper_parameters['graph'])
         graph_data = feature_generator(graph_data)
         node_features = graph_data.random_walk_pe
-    elif embed_type == 'tweets':
-        node_features = get_tweet_embed(hyper_parameters['base_dir'], hyper_parameters['dataset_name'],
-                                        hyper_parameters['noderemapping'], hyper_parameters['noderemapping_rev'],
-                                        hyper_parameters['num_cores'], hyper_parameters['num_tweet_to_sample'],
-                                        hyper_parameters['aggr_type'], hyper_parameters['device'])
     else:
         raise Exception(f'Embed type: {embed_type} not available yet.')
     torch.save(node_features, path_to_embed)

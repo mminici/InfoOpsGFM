@@ -45,7 +45,6 @@ def main(dataset_name='cuba',
     # Preprocessing: all isolated nodes must be rewired
     _, network = handle_isolated_nodes(datasets['graph'])
     # Compute node centrality values
-    # TODO: take the type of centrality as input parameter
     centrality_values = nx.eigenvector_centrality(network)
     # Transform into a list
     centrality_val_list = [-1] * network.number_of_nodes()
