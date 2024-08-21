@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="df460ae2-fe80-4d19-8efb-b48c3e780171" name="SocGFM">
+        <fileTransfer rootFolder="/mnt/nas/minici/SocGFM" accessType="SFTP" host="dgx.icar.cnr.it" port="22" sshConfigId="41bfaa3d-d6ff-41dd-a9f0-93dc87c6e146" sshConfig="minici@dgx.icar.cnr.it:22 agent" authAgent="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

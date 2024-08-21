@@ -1,0 +1,4 @@
+1. Execute "preprocess-tweet-texts.py" with chosen parameters
+2. Execute "preprocessing-sim-networks.py" with chosen parameters
+3. Execute "gen-trainValTest-split.py" with chosen parameters
+
