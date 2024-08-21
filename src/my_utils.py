@@ -45,12 +45,6 @@ def setup_env(device_id, dataset_name, hyper_parameters):
     # Import dataset
     processed_data_dir = base_dir / 'data' / 'processed'
     data_dir = processed_data_dir / dataset_name
-    # data_dir = data_dir / f'seed_{seed}_num_splits_{num_splits}'
-    # train_perc = hyper_parameters['train_perc']
-    # val_perc = hyper_parameters['val_perc']
-    # test_perc = hyper_parameters['test_perc']
-    # data_dir = data_dir / f'train_{round(train_perc, 2)}_val_{round(val_perc, 2)}_test_{round(test_perc, 2)}'
-    # data_dir.mkdir(exist_ok=True, parents=True)
     return device, base_dir, interim_data_dir, data_dir
 
 
