@@ -1,4 +1,4 @@
-# Repository of the AAAI Submission "IOHunter: Graph Foundation Model to Uncover Online Information Operations".
+# Repository of the AAAI Submission "_IOHunter_: Graph Foundation Model to Uncover Online Information Operations".
 
 ## Reproducibility Steps
 ### Data preprocessing
