@@ -13,8 +13,6 @@ import torch
 import mlflow
 from collections import Counter
 
-
-from node2vec import Node2Vec
 from torch_geometric.utils import from_networkx
 from torch_geometric.data import HeteroData
 from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
@@ -55,6 +53,26 @@ def setup_env(device_id, dataset_name, hyper_parameters):
     return device, base_dir, interim_data_dir, data_dir
 
 
+def set_maximum_edge_weights(main_graph, graph_list):
+    # Iterate through each edge in the main graph
+    for u, v in main_graph.edges():
+        # Initialize maximum weight for the edge (u, v)
+        max_weight = 0
+
+        # Iterate over the provided list of graphs to find the maximum weight
+        for G in graph_list:
+            # Check if the edge exists in the current graph
+            if G.has_edge(u, v):
+                # Get the weight of the edge, default to 0 if not set
+                weight = G[u][v].get('weight', 0)
+                max_weight = max(max_weight, weight)
+
+        # Set the weight of the edge in the main graph to the maximum weight found
+        main_graph[u][v]['weight'] = max_weight
+
+    return main_graph
+
+
 def move_data_to_device(data, device):
     data['labels'] = torch.FloatTensor(data['labels']).to(device)
     return data
@@ -85,26 +103,6 @@ def handle_isolated_nodes(graph):
         if graph.has_edge(isolated_node, isolated_node):
             graph.remove_edge(isolated_node, isolated_node)
     return isolated_nodes, graph
-
-
-def load_node2vec_embeddings(data_dir, hyper_parameters):
-    seed = hyper_parameters['seed']
-    latent_dim = hyper_parameters['latent_dim']
-    if (data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy').exists():
-        print('Loading node2vec embed from disk...')
-        return np.load(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy', allow_pickle=True)
-    # Precompute probabilities and generate walks - **ON WINDOWS ONLY WORKS WITH workers=1**
-    node2vec = Node2Vec(hyper_parameters['graph'], dimensions=hyper_parameters['latent_dim'],
-                        walk_length=5, num_walks=10, workers=8, seed=seed)
-    # Embed nodes
-    model = node2vec.fit(window=8, min_count=1, batch_words=4, seed=seed)
-    node_embeddings_node2vec = np.full(
-        shape=(hyper_parameters['graph'].number_of_nodes(), hyper_parameters['latent_dim']),
-        fill_value=None)
-    for node_id in hyper_parameters['graph'].nodes():
-        node_embeddings_node2vec[int(node_id)] = model.wv[node_id]
-    np.save(data_dir / f'node2vec_dim{latent_dim}_seed{seed}.npy', node_embeddings_node2vec)
-    return node_embeddings_node2vec
 
 
 def get_edge_index_from_networkx(network):
@@ -168,6 +166,87 @@ def degree_to_one_hot(degree_dict, num_buckets, max_node_id):
     return torch.FloatTensor(degrees_array)
 
 
+def compute_eigenvector_centrality_one_hot(G, num_percentiles):
+    # Compute the eigenvector centrality of each node in the graph
+    eigen_centrality = nx.eigenvector_centrality(G)
+
+    # Convert eigenvector centrality values to a sorted list
+    centrality_values = np.array(list(eigen_centrality.values()))
+
+    # Compute percentiles of eigenvector centralities
+    percentiles = np.percentile(centrality_values, np.linspace(0, 100, num_percentiles))
+
+    # Number of nodes in the graph
+    num_nodes = G.number_of_nodes()
+
+    # Initialize a 2D numpy array for one-hot vectors
+    one_hot_matrix = np.zeros((num_nodes, num_percentiles))
+
+    # Map nodes to percentile ranks
+    for node, centrality in eigen_centrality.items():
+        # Determine the percentile range for the current centrality
+        percentile_rank = np.searchsorted(percentiles, centrality, side='right') - 1
+
+        # Set the corresponding entry to 1 in the one-hot matrix
+        one_hot_matrix[node, percentile_rank] = 1
+
+    return torch.FloatTensor(one_hot_matrix)
+
+
+def compute_node_strength_one_hot(G, num_percentiles):
+    # Compute the strength of each node (sum of weights of edges connected to each node)
+    node_strength = {node: sum(data.get('weight', 1) for _, _, data in G.edges(node, data=True)) for node in G.nodes()}
+
+    # Convert node strength values to a sorted list
+    strength_values = np.array(list(node_strength.values()))
+
+    # Compute percentiles of node strengths
+    percentiles = np.percentile(strength_values, np.linspace(0, 100, num_percentiles))
+
+    # Number of nodes in the graph
+    num_nodes = G.number_of_nodes()
+
+    # Initialize a 2D numpy array for one-hot vectors
+    one_hot_matrix = np.zeros((num_nodes, num_percentiles))
+
+    # Map nodes to percentile ranks
+    for node, strength in node_strength.items():
+        # Determine the percentile range for the current node strength
+        percentile_rank = np.searchsorted(percentiles, strength, side='right') - 1
+
+        # Set the corresponding entry to 1 in the one-hot matrix
+        one_hot_matrix[node, percentile_rank] = 1
+
+    return torch.FloatTensor(one_hot_matrix)
+
+
+def compute_pagerank_one_hot(G, num_percentiles, alpha=0.85):
+    # Compute the PageRank of each node
+    pagerank = nx.pagerank(G, alpha=alpha)
+
+    # Convert PageRank values to a sorted list
+    pagerank_values = np.array(list(pagerank.values()))
+
+    # Compute percentiles of PageRank values
+    percentiles = np.percentile(pagerank_values, np.linspace(0, 100, num_percentiles))
+
+    # Number of nodes in the graph
+    num_nodes = G.number_of_nodes()
+
+    # Initialize a 2D numpy array for one-hot vectors
+    one_hot_matrix = np.zeros((num_nodes, num_percentiles))
+
+    # Map nodes to percentile ranks
+    for node, pr_value in pagerank.items():
+        # Determine the percentile range for the current PageRank value
+        percentile_rank = np.searchsorted(percentiles, pr_value, side='right') - 1
+
+        # Set the corresponding entry to 1 in the one-hot matrix
+        one_hot_matrix[node, percentile_rank] = 1
+
+    return torch.FloatTensor(one_hot_matrix)
+
+
 def get_gnn_embeddings(data_dir, hyper_parameters, type=None):
     trace_type = hyper_parameters['trace_type']
     embed_type = hyper_parameters['type']
@@ -206,6 +285,22 @@ def get_gnn_embeddings(data_dir, hyper_parameters, type=None):
         latent_dim = hyper_parameters['latent_dim']
         node_features = degree_to_one_hot(dict(nx.degree(hyper_parameters['graph'])), latent_dim,
                                           hyper_parameters['num_nodes'])
+    elif embed_type == 'positional_centrality':
+        latent_dim = hyper_parameters['latent_dim']
+        node_features = compute_eigenvector_centrality_one_hot(hyper_parameters['graph'], latent_dim)
+    elif embed_type == 'positional_strength':
+        latent_dim = hyper_parameters['latent_dim']
+        node_features = compute_node_strength_one_hot(hyper_parameters['graph'], latent_dim)
+    elif embed_type == 'positional_pr':
+        latent_dim = hyper_parameters['latent_dim']
+        node_features = compute_pagerank_one_hot(hyper_parameters['graph'], latent_dim)
+    elif embed_type == 'positional_combined':
+        latent_dim = hyper_parameters['latent_dim']
+        node_features_centrality = compute_eigenvector_centrality_one_hot(hyper_parameters['graph'], latent_dim)
+        node_features_strength = compute_node_strength_one_hot(hyper_parameters['graph'], latent_dim)
+        node_features_degree = degree_to_one_hot(dict(nx.degree(hyper_parameters['graph'])), latent_dim,
+                                                 hyper_parameters['num_nodes'])
+        node_features = torch.cat((node_features_strength, node_features_degree, node_features_centrality), dim=1)
     elif embed_type == 'positional_rw':
         latent_dim = hyper_parameters['latent_dim']
         feature_generator = AddRandomWalkPE(latent_dim)
@@ -236,6 +331,55 @@ def get_edge_index(graph, data_dir, type=None):
     else:
         print('Loading ' + str(data_dir / fname))
         return torch.load(data_dir / fname)
+
+
+def extract_edge_weights(nx_graph, edge_index, data_dir, type=None):
+    if type is None:
+        fname = 'edge_weight.th'
+    else:
+        fname = f'edge_weight{type}.th'
+    if not (data_dir / fname).exists():
+        print(str(data_dir / fname) + ' does not exist. Computing it now...')
+        # Initialize an empty list to store edge weights
+        edge_weights = []
+
+        # Iterate over the edges in the edge_index tensor
+        for i in range(edge_index.size(1)):  # edge_index.size(1) gives the number of edges
+            # Get the source and target node indices of the edge
+            u, v = int(edge_index[0, i]), int(edge_index[1, i])
+
+            # Get the edge weight from the NetworkX graph (default to 1 if weight not found)
+            weight = nx_graph[u][v].get('weight', 1.0)
+
+            # Append the weight to the list
+            edge_weights.append(weight)
+
+        # Convert the list of weights to a PyTorch tensor
+        edge_weights_tensor = torch.tensor(edge_weights, dtype=torch.float)
+        torch.save(edge_weights_tensor, data_dir / fname)
+        return edge_weights_tensor
+    else:
+        print('Loading ' + str(data_dir / fname))
+        return torch.load(data_dir / fname)
+
+
+def remove_low_weight_edges(G, min_weight=2):
+    """
+    Removes all edges from the network with a weight less than the specified minimum weight.
+
+    :param G: An undirected NetworkX graph with weighted edges.
+    :param min_weight: The minimum weight threshold for retaining edges (default is 2).
+    :return: A NetworkX graph with edges of weight >= min_weight.
+    """
+
+    # Identify edges to be removed
+    edges_to_remove = [(u, v) for u, v, attr in G.edges(data=True) if attr['weight'] < min_weight]
+
+    # Remove the identified edges
+    G.remove_edges_from(edges_to_remove)
+
+    print(f"Removed {len(edges_to_remove)} edges with weight less than {min_weight}.")
+    return G
 
 
 def _get_best_result(test_logger, metric_to_optimize):

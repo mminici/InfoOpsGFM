@@ -2,7 +2,6 @@ import argparse
 import pathlib
 import pickle
 import networkx as nx
-import pandas as pd
 import numpy as np
 
 import my_utils
@@ -10,17 +9,16 @@ from data_loader import load_dataset
 from sklearn.model_selection import train_test_split
 
 DATASET_FILENAME = 'datasets.pkl'
-CONTROL_FILE_IDX, IO_FILE_IDX = 0, 1
-filename_dict = {'UAE_sample': ['control_driver_tweets_uae_082019.jsonl', 'uae_082019_tweets_csv_unhashed.csv'],
-                 'cuba': ['control_driver_tweets_cuba_082020.jsonl', 'cuba_082020_tweets_csv_unhashed.csv']}
 
 
-def save_dataset(data_dir, data, filter_th, tr_perc, undersampling=None):
+def save_dataset(data_dir, data, filter_th, tr_perc, undersampling_perc=None, undersampling=None):
     fname = f'{filter_th}_{DATASET_FILENAME}'
     if tr_perc != 0.6:
         fname = f'{filter_th}_{DATASET_FILENAME}_{tr_perc}'
+    if undersampling_perc is not None:
+        fname += f'_{undersampling_perc}U'
     if undersampling is not None:
-        fname += f'_{undersampling}U'
+        fname += f'_{int(undersampling)}K'
     with open(data_dir / fname, 'wb') as file:
         pickle.dump(data, file)
 
@@ -94,28 +92,90 @@ def flip_true_entries_stratified(arr, labels, percentage):
     return new_arr
 
 
-def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num_splits, min_tweets, under_sampling):
+def flip_true_entries_stratified_num_labeled(arr, labels, num_labeled_examples):
+    """
+    Adjust the number of True entries in a boolean NumPy array for each class
+    based on the given node labels, so that exactly num_labeled_examples are True
+    for each label.
+
+    Parameters:
+    arr (np.ndarray): A boolean NumPy array.
+    labels (np.ndarray): A NumPy array of node labels.
+    num_labeled_examples (int): The exact number of True entries to retain for each class.
+
+    Returns:
+    np.ndarray: A new boolean NumPy array with exactly num_labeled_examples True for each label.
+    """
+    # Ensure arr and labels have the same length
+    if len(arr) != len(labels):
+        raise ValueError("The length of arr and labels must be the same.")
+
+    # Create a copy of the original array to modify
+    new_arr = arr.copy()
+
+    # Find unique labels
+    unique_labels = np.unique(labels)
+
+    for label in unique_labels:
+        # Get indices of entries with the current label
+        label_indices = np.where(labels == label)[0]
+
+        # Find the True entries among these indices
+        true_indices = np.where(arr[label_indices] == True)[0]
+        num_true = len(true_indices)
+
+        # Calculate the number of True entries to flip for this label
+        num_to_flip = num_true - int(num_labeled_examples)
+
+        if num_to_flip > 0:
+            print(f'num_to_flip: {num_to_flip}', f'num_true: {num_true}', f'num_true: {int(num_labeled_examples)}')
+            # Randomly select indices to flip
+            flip_indices = np.random.choice(true_indices, num_to_flip, replace=False)
+
+            # Flip the selected indices in the new array
+            new_arr[label_indices[flip_indices]] = False
+        elif num_to_flip < 0:
+            raise Exception(f'want {int(num_labeled_examples)} but have {num_true}')
+
+        # If num_true == num_labeled_examples, no change is needed
+
+    return new_arr
+
+
+def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num_splits, min_tweets,
+         under_sampling_perc, under_sampling):
     assert train_perc + val_perc + test_perc == 1.0, 'Split percentages do not sum to 1.'
     # Basic definitions
     base_dir = pathlib.Path.cwd().parent
     processed_datadir = base_dir / 'data' / 'processed'
     data_dir = processed_datadir / dataset_name
     data_dir.mkdir(parents=True, exist_ok=True)
+    if under_sampling_perc is not None:
+        under_sampling = float(under_sampling_perc)
+        # Open the dataset
+        dataset = load_dataset(data_dir, tweet_sim_threshold, train_perc, None)
+        for run_id in dataset['splits']:
+            tr_mask = dataset['splits'][run_id]['train']
+            dataset['splits'][run_id]['train'] = flip_true_entries_stratified(tr_mask, dataset['labels'],
+                                                                              under_sampling)
+        save_dataset(data_dir, dataset, tweet_sim_threshold, train_perc, under_sampling, None)
+        return
     if under_sampling is not None:
         under_sampling = float(under_sampling)
         # Open the dataset
         dataset = load_dataset(data_dir, tweet_sim_threshold, train_perc, None)
         for run_id in dataset['splits']:
             tr_mask = dataset['splits'][run_id]['train']
-            dataset['splits'][run_id]['train'] = flip_true_entries_stratified(tr_mask, dataset['labels'], under_sampling)
-        save_dataset(data_dir, dataset, tweet_sim_threshold, train_perc, under_sampling)
+            dataset['splits'][run_id]['train'] = flip_true_entries_stratified_num_labeled(tr_mask, dataset['labels'],
+                                                                                          under_sampling)
+        save_dataset(data_dir, dataset, tweet_sim_threshold, train_perc, None, under_sampling)
         return
     # Load networks
     print('Loading similarity networks...')
     coRT = load_network(data_dir / 'coRT.pkl', net_type='coRT')
     coURL = load_network(data_dir / 'coURL.pkl', net_type='coURL')
     hashSeq = load_network(data_dir / 'hashSeq.pkl', net_type='hashSeq')
-    fastRT = load_network(data_dir / 'fastRT.pkl', net_type='fastRT')
+    # fastRT = load_network(data_dir / 'fastRT.pkl', net_type='fastRT')
     tweetSim = load_network(data_dir / 'tweetSim.pkl', net_type='tweetSim')
     filter_th = 'noFilt'
     if tweet_sim_threshold is not None:
@@ -124,40 +184,29 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
         edges_to_remove = [(u, v) for u, v, w in tweetSim.edges(data=True) if w['weight'] < tweet_sim_threshold]
         tweetSim.remove_edges_from(edges_to_remove)
         filter_th = str(round(tweet_sim_threshold, 2))
-    # Fusing the 5 similarity networks
-    fusedNet = nx.compose(tweetSim, fastRT)
-    fusedNet = nx.compose(fusedNet, hashSeq)
+    # Fusing the similarity networks
+    fusedNet = nx.compose(tweetSim, hashSeq)
+    # fusedNet = nx.compose(fusedNet, fastRT)
     fusedNet = nx.compose(fusedNet, coURL)
     fusedNet = nx.compose(fusedNet, coRT)
     # Applying node filtering
-    if dataset_name in ['UAE_sample', 'cuba']:
-        # At the moment, we exclude all users having less than 10 tweets
-        print(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][CONTROL_FILE_IDX])
-        control_df = pd.read_json(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][CONTROL_FILE_IDX],
-                                  lines=True)
-        control_df['userid'] = control_df['user'].apply(lambda x: np.int64(x['id']))
-        print('Importing IO drivers file...')
-        print(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][IO_FILE_IDX])
-        iodrivers_df = pd.read_csv(base_dir / 'data' / 'raw' / dataset_name / filename_dict[dataset_name][IO_FILE_IDX],
-                                   sep=",")
-    else:
-        print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
-        control_df = my_utils.read_compressed_pickle(
-            base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
-        control_df['userid'] = control_df['userid'].apply(lambda x: np.int64(x))
-        print('Importing IO drivers file...')
-        print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
-        iodrivers_df = my_utils.read_compressed_pickle(
-            base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
-
+    print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
+    control_df = my_utils.read_compressed_pickle(
+        base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_control.pkl.gz')
+    control_df['userid'] = control_df['userid'].apply(lambda x: np.int64(x))
+    print('Importing IO drivers file...')
+    print(base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
+    iodrivers_df = my_utils.read_compressed_pickle(
+        base_dir / 'data' / 'raw' / dataset_name / f'{dataset_name}_tweets_io.pkl.gz')
     # Grouping by 'userid' and filtering those with at least 5 rows
-    io_drivers_userids = iodrivers_df.groupby('userid').filter(lambda x: len(x) >= min_tweets)['userid'].unique().astype(str)
+    io_drivers_userids = iodrivers_df.groupby('userid').filter(lambda x: len(x) >= min_tweets)[
+        'userid'].unique().astype(str)
     control_userids = control_df.groupby('userid').filter(lambda x: len(x) >= min_tweets)['userid'].unique().astype(str)
     filtered_userids = np.concatenate([io_drivers_userids, control_userids])
     coRT = retain_nodes_in_graph(coRT, filtered_userids)
     coURL = retain_nodes_in_graph(coURL, filtered_userids)
     hashSeq = retain_nodes_in_graph(hashSeq, filtered_userids)
-    fastRT = retain_nodes_in_graph(fastRT, filtered_userids)
+    # fastRT = retain_nodes_in_graph(fastRT, filtered_userids)
     tweetSim = retain_nodes_in_graph(tweetSim, filtered_userids)
     fusedNet = retain_nodes_in_graph(fusedNet, filtered_userids)
     # Add a self-loop for each node in the list if it's not already in the graph
@@ -168,8 +217,8 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
             coURL.add_edge(node_id, node_id, weight=1.0)
         if not hashSeq.has_node(node_id):
             hashSeq.add_edge(node_id, node_id, weight=1.0)
-        if not fastRT.has_node(node_id):
-            fastRT.add_edge(node_id, node_id, weight=1.0)
+        # if not fastRT.has_node(node_id):
+        #     fastRT.add_edge(node_id, node_id, weight=1.0)
         if not tweetSim.has_node(node_id):
             tweetSim.add_edge(node_id, node_id, weight=1.0)
         if not fusedNet.has_node(node_id):
@@ -187,10 +236,11 @@ def main(dataset_name, train_perc, val_perc, test_perc, tweet_sim_threshold, num
     coRT = nx.relabel_nodes(coRT, noderemapping)
     coURL = nx.relabel_nodes(coURL, noderemapping)
     hashSeq = nx.relabel_nodes(hashSeq, noderemapping)
-    fastRT = nx.relabel_nodes(fastRT, noderemapping)
+    # fastRT = nx.relabel_nodes(fastRT, noderemapping)
     tweetSim = nx.relabel_nodes(tweetSim, noderemapping)
     datasets = {'graph': fusedNet.copy(), 'coRT': coRT.copy(), 'coURL': coURL.copy(), 'hashSeq': hashSeq.copy(),
-                'fastRT': fastRT.copy(), 'tweetSim': tweetSim.copy(), 'noderemapping': noderemapping,
+                # 'fastRT': fastRT.copy(),
+                'tweetSim': tweetSim.copy(), 'noderemapping': noderemapping,
                 'noderemapping_rev': noderemapping_rev, 'labels': np.copy(node_labels), 'splits': {}}
     # Perform train-val-test split
     print(f'Performing train-val-test split (tr, val, test: {train_perc}, {val_perc}, {test_perc})...')
@@ -240,6 +290,8 @@ if __name__ == '__main__':
                         default=10)
     parser.add_argument('-heterogeneous', '--het', action='store_true', help="If True, return all the networks "
                                                                              "otherwise return the fused")
-    parser.add_argument('-under_sampling', '--under', help='undersampling percentage', default=None)
+    parser.add_argument('-under_sampling_perc', '--under_perc', help='undersampling percentage', default=None)
+    parser.add_argument('-under_sampling', '--under', help='undersampling num labels', default=None)
     args = parser.parse_args()
-    main(args.dataset, args.train, args.val, args.test, args.tsim_th, args.splits, args.min_tweets, args.under)
+    args.under = args.under if args.under is None else int(args.under)
+    main(args.dataset, args.train, args.val, args.test, args.tsim_th, args.splits, args.min_tweets, args.under_perc, int(args.under))

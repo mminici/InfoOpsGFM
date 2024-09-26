@@ -154,7 +154,7 @@ def main(dataset_name='cuba',
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Preprocess dataset to produce train-val-test split")
-    parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='3')
+    parser.add_argument('-device_id', '--device', type=str, help='GPU ID#', default='0')
     parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='cuba')
     parser.add_argument('-seed', '--seed', type=int, help='Random seed', default=12121995)
     parser.add_argument('-train_perc', '--train', type=float, help='Training percentage', default=.6)

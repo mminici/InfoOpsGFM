@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GCNConv, GATConv, SAGEConv, HeteroConv
+from torch_geometric.nn import GCNConv, GATConv, SAGEConv, HeteroConv, GraphConv
 
 
 class GNN(torch.nn.Module):
@@ -12,7 +12,8 @@ class GNN(torch.nn.Module):
         elif gnn_type == 'gat':
             self.gnn_block = GATConv
         elif gnn_type == 'sage':
-            self.gnn_block = SAGEConv
+            # self.gnn_block = SAGEConv
+            self.gnn_block = lambda x, y: GraphConv(x, y, aggr='mean')
         else:
             raise Exception(f'{gnn_type} is not supported.')
 
@@ -26,11 +27,17 @@ class GNN(torch.nn.Module):
         self.activation_fn = activation_fn
         self.dropout = torch.nn.Dropout(dropout_p)
 
-    def forward(self, node_features, edge_index):
-        node_features = self.conv1(node_features, edge_index)
+    def forward(self, node_features, edge_index, edge_weight=None):
+        if edge_weight is None:
+            node_features = self.conv1(node_features, edge_index)
+        else:
+            node_features = self.conv1(node_features, edge_index, edge_weight)
         node_features = self.activation_fn(node_features)
         node_features = self.dropout(node_features)
-        node_features = self.conv2(node_features, edge_index)
+        if edge_weight is None:
+            node_features = self.conv2(node_features, edge_index)
+        else:
+            node_features = self.conv2(node_features, edge_index, edge_weight)
         return torch.exp(self.output_fn(node_features))
 
 

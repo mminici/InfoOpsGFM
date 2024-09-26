@@ -26,10 +26,23 @@ def get_tweet_timestamp(tid):
         return None
 
 
+def transform_string_none_to_nan(df):
+    """
+    Transforms any string value 'None' in a pandas DataFrame to NaN.
+
+    Parameters:
+    df (pd.DataFrame): The input DataFrame.
+
+    Returns:
+    pd.DataFrame: The transformed DataFrame with 'None' string values replaced by NaN.
+    """
+    return df.applymap(lambda x: np.nan if isinstance(x, str) and x == 'None' else x)
+
+
 def coRetweet(control, treated):
     # control dataset -> includes only columns ['user', 'retweeted_status', 'id']
     # information Operation dataset -> includes only columns ['tweetid', 'userid', 'retweet_tweetid']
-    control = control[['user', 'retweeted_status', 'id']]
+    control = transform_string_none_to_nan(control[['userid', 'retweet_tweetid', 'tweetid']])
     treated = treated[['tweetid', 'userid', 'retweet_tweetid']]
 
     print('Start preprocessing...')
@@ -37,10 +50,8 @@ def coRetweet(control, treated):
     control.dropna(inplace=True)
     treated.dropna(inplace=True)
 
-    control['retweet_id'] = control['retweeted_status'].apply(lambda x: int(dict(x)['id']))
-    control['userid'] = control['user'].apply(lambda x: int(dict(x)['id']))
-    control = control[['id', 'userid', 'retweet_id']]
-    control.columns = ['tweetid', 'userid', 'retweet_tweetid']
+    print('\t Preprocessing control data...')
+    control['retweet_tweetid'] = control['retweet_tweetid'].astype(int)
 
     print('\t Preprocessing treated data...')
     treated['retweet_tweetid'] = treated['retweet_tweetid'].astype(int)
@@ -88,23 +99,75 @@ def coRetweet(control, treated):
     return G
 
 
+def retweet_network(control, treated):
+    """
+    Generates an undirected retweet network from a dataset of tweets.
+
+    :param control: DataFrame containing columns ['userid', 'retweet_userid']
+    :param treated: DataFrame containing columns ['userid', 'retweet_userid']
+    :return: An undirected NetworkX graph representing the retweet network.
+    """
+
+    # Step 1: Preprocessing
+    print('Start preprocessing...')
+    control = transform_string_none_to_nan(control[['userid', 'retweet_tweetid', 'tweetid', 'retweet_userid']])
+    treated = treated[['tweetid', 'userid', 'retweet_tweetid', 'retweet_userid']]
+    control.dropna(inplace=True)
+    treated.dropna(inplace=True)
+    control['retweet_tweetid'] = control['retweet_tweetid'].astype(int)
+    treated['retweet_tweetid'] = treated['retweet_tweetid'].astype(int)
+
+    print('\t Putting together control and treated data')
+    tweets = pd.concat([treated, control])
+
+    # Remove rows with missing values
+    tweets.dropna(subset=['userid', 'retweet_userid'], inplace=True)
+
+    # Ensure userid and retweet_userid are integers
+    tweets['userid'] = tweets['userid'].astype(int)
+    tweets['retweet_userid'] = tweets['retweet_userid'].astype(int)
+
+    # Step 2: Building the Retweet Network
+    print('Building the retweet network...')
+
+    # Create an empty undirected graph
+    G = nx.Graph()
+
+    # Add edges to the graph with weights based on retweet interactions
+    for _, row in tweets.iterrows():
+        user1 = row['userid']
+        user2 = row['retweet_userid']
+
+        # Add or update the edge between user1 and user2 if they are different
+        if user1 != user2:
+            if G.has_edge(user1, user2):
+                # If the edge already exists, increment the weight
+                G[user1][user2]['weight'] += 1
+            else:
+                # If the edge does not exist, add it with an initial weight of 1
+                G.add_edge(user1, user2, weight=1)
+
+    # Remove isolates (users without any retweet interactions)
+    G.remove_nodes_from(list(nx.isolates(G)))
+
+    # Print network statistics
+    print_network_stats(G)
+
+    return G
+
+
 def coURL(control, treated):
     # control dataset -> includes only columns ['user', 'entities', 'id']
     # information Operation dataset -> includes only columns ['tweetid', 'userid', 'urls']
-    control = control[['user', 'entities', 'id']]
+    control = control[['userid', 'urls', 'tweetid']]
     treated = treated[['tweetid', 'userid', 'urls']]
 
     print('Start preprocessing...')
     print('\t Preprocessing control data...')
 
-    control.dropna(inplace=True)
-
-    control['userid'] = control['user'].apply(lambda x: dict(x)['id'])
-    control['urls'] = control['entities'].apply(lambda x: dict(x)['urls'])
-    control = control[['userid', 'urls']].explode('urls')
-    control.dropna(inplace=True)
-    control['urls'] = control['urls'].apply(
-        lambda x: str(dict(x)['expanded_url'].replace(',', '.')) if x else np.NaN)
+    control['urls'] = control['urls'].astype(str).replace('[]', '').apply(
+        lambda x: x[1:-1].replace("'", '').split(',') if len(x) != 0 else '')
+    control = control.loc[control['urls'] != ''].explode('urls')
 
     print('\t Preprocessing treated data...')
     treated['urls'] = treated['urls'].astype(str).replace('[]', '').apply(
@@ -154,22 +217,22 @@ def hashSeq(control, treated, minHashtags=5):
     print('Start preprocessing...')
     print('\t Preprocessing control data...')
     # control dataset -> includes only columns ['retweeted_status', 'user', 'in_reply_to_status_id', 'full_text', 'id']
-    control = control[['retweeted_status', 'user', 'in_reply_to_status_id', 'full_text', 'id']]
+    control = control[['retweet_tweetid', 'userid', 'in_reply_to_tweetid', 'tweet_text', 'tweetid']]
     # information Operation dataset -> includes only
     # columns ['retweet_tweetid', 'userid', 'in_reply_to_tweetid', 'quoted_tweet_tweetid', 'tweet_text', 'tweetid']
     treated = treated[
-        ['retweet_tweetid', 'userid', 'in_reply_to_tweetid', 'quoted_tweet_tweetid', 'tweet_text', 'tweetid']]
+        ['retweet_tweetid', 'userid', 'in_reply_to_tweetid', 'tweet_text', 'tweetid']]
     # Start preprocessing
+    print('\t Preprocessing control data...')
     control.replace(np.NaN, None, inplace=True)
-    control['engagementParentId'] = control['in_reply_to_status_id']
-    print('\t For-Loop')
+
     retweet_id = []
     names = []
     eng = []
-    for row in control[['retweeted_status', 'user', 'in_reply_to_status_id']].values:
+    print('\t For-Loop')
+    for row in control[['retweet_tweetid', 'userid', 'in_reply_to_tweetid']].values:
         if row[0] is not None:
-            u = dict(row[0])
-            retweet_id.append(u['id'])
+            retweet_id.append(row[0])
             eng.append('retweet')
         elif row[2] is not None:
             retweet_id.append(row[2])
@@ -177,17 +240,15 @@ def hashSeq(control, treated, minHashtags=5):
         else:
             retweet_id.append(None)
             eng.append('tweet')
-        u = dict(row[1])
-        names.append(u['id'])
+        names.append(row[1])
 
     control['twitterAuthorScreenname'] = names
-    control['retweet_ordinalId'] = retweet_id
     control['engagementType'] = eng
-    control['engagementParentId'].fillna(control['retweet_ordinalId'], inplace=True)
+    control['engagementParentId'] = retweet_id
 
     control_filt = control[['twitterAuthorScreenname', 'engagementType', 'engagementParentId']]
-    control_filt['contentText'] = control['full_text']
-    control_filt['tweetId'] = control['id'].astype(int)
+    control_filt['contentText'] = control['tweet_text']
+    control_filt['tweetId'] = control['tweetid'].astype(int)
     control_filt['tweet_timestamp'] = control_filt['tweetId'].apply(lambda x: get_tweet_timestamp(x))
 
     del control
@@ -199,16 +260,13 @@ def hashSeq(control, treated, minHashtags=5):
     names = []
     eng = []
     print('\t For-Loop')
-    for row in treated[['retweet_tweetid', 'userid', 'in_reply_to_tweetid', 'quoted_tweet_tweetid']].values:
+    for row in treated[['retweet_tweetid', 'userid', 'in_reply_to_tweetid']].values:
         if row[0] is not None:
             retweet_id.append(row[0])
             eng.append('retweet')
         elif row[2] is not None:
             retweet_id.append(row[2])
             eng.append('reply')
-        elif row[3] is not None:
-            retweet_id.append(row[3])
-            eng.append('quote tweet')
         else:
             retweet_id.append(None)
             eng.append('tweet')
@@ -243,47 +301,13 @@ def hashSeq(control, treated, minHashtags=5):
     temp = cum.groupby('hashtag_seq', as_index=False).count()
     cum = cum.loc[cum['hashtag_seq'].isin(temp.loc[temp['twitterAuthorScreenname'] > 1]['hashtag_seq'].to_list())]
 
-    cum['value'] = 1
-
-    hashs = dict(zip(list(cum.hashtag_seq.unique()), list(range(cum.hashtag_seq.unique().shape[0]))))
-    cum['hashtag_seq'] = cum['hashtag_seq'].apply(lambda x: hashs[x]).astype(int)
-    del hashs
-
-    userid = dict(zip(list(cum.twitterAuthorScreenname.astype(str).unique()),
-                      list(range(cum.twitterAuthorScreenname.unique().shape[0]))))
-    cum['twitterAuthorScreenname'] = cum['twitterAuthorScreenname'].astype(str).apply(lambda x: userid[x]).astype(int)
-
-    person_c = CategoricalDtype(sorted(cum.twitterAuthorScreenname.unique()), ordered=True)
-    thing_c = CategoricalDtype(sorted(cum.hashtag_seq.unique()), ordered=True)
-
-    row = cum.twitterAuthorScreenname.astype(person_c).cat.codes
-    col = cum.hashtag_seq.astype(thing_c).cat.codes
-    sparse_matrix = csr_matrix((cum["value"], (row, col)), shape=(person_c.categories.size, thing_c.categories.size))
-    del row, col, person_c, thing_c
-
-    print('\t Computing TF-IDF matrix')
-    vectorizer = TfidfTransformer()
-    tfidf_matrix = vectorizer.fit_transform(sparse_matrix)
-    print('\t Computing cosine similarity')
-    similarities = cosine_similarity(tfidf_matrix, dense_output=False)
-
-    print('\t Computing graph representation')
-    df_adj = pd.DataFrame(similarities.toarray())
-    del similarities
-    df_adj.index = userid.keys()
-    df_adj.columns = userid.keys()
-    G = nx.from_pandas_adjacency(df_adj)
-    del df_adj
-
-    G.remove_nodes_from(list(nx.isolates(G)))
-    print_network_stats(G)
     return G
 
 
 def fastRetweet(control, treated, timeInterval=10):
     # control dataset -> includes only columns ['user', 'retweeted_status', 'id']
     # information Operation dataset -> includes only columns ['tweetid', 'userid', 'retweet_tweetid', 'retweet_userid']
-    control = control[['user', 'retweeted_status', 'id']]
+    control = transform_string_none_to_nan(control[['tweetid', 'userid', 'retweet_tweetid', 'retweet_userid']])
     treated = treated[['tweetid', 'userid', 'retweet_tweetid', 'retweet_userid']]
 
     print('Start preprocessing...')
@@ -291,14 +315,9 @@ def fastRetweet(control, treated, timeInterval=10):
     control.dropna(inplace=True)
     treated.dropna(inplace=True)
 
-    control['retweet_id'] = control['retweeted_status'].apply(lambda x: int(dict(x)['id']))
-    control['retweet_userid'] = control['retweeted_status'].apply(lambda x: int(dict(dict(x)['user'])['id']))
-    control['userid'] = control['user'].apply(lambda x: int(dict(x)['id']))
-    control['tweet_timestamp'] = control['id'].apply(lambda x: get_tweet_timestamp(int(x)))
-    control['retweet_timestamp'] = control['retweet_id'].apply(lambda x: get_tweet_timestamp(int(x)))
-    control = control[['id', 'userid', 'retweet_id', 'tweet_timestamp', 'retweet_timestamp', 'retweet_userid']]
-    control.columns = ['tweetid', 'userid', 'retweet_tweetid', 'tweet_timestamp', 'retweet_timestamp',
-                       'retweet_userid']
+    control['retweet_tweetid'] = control['retweet_tweetid'].astype(int)
+    control['tweet_timestamp'] = control['tweetid'].apply(lambda x: get_tweet_timestamp(int(x)))
+    control['retweet_timestamp'] = control['retweet_tweetid'].apply(lambda x: get_tweet_timestamp(int(x)))
 
     print('\t Preprocessing treated data...')
     treated['retweet_tweetid'] = treated['retweet_tweetid'].astype(int)

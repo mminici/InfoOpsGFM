@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from models import GNN
 from my_utils import set_seed, setup_env, move_data_to_device, get_gnn_embeddings, update_best_model_snapshot \
-    , save_metrics, get_edge_index, handle_isolated_nodes, set_maximum_edge_weights
+    , save_metrics, get_edge_index, handle_isolated_nodes, set_maximum_edge_weights, extract_edge_weights
 from data_loader import create_data_loader
 from model_eval import TrainLogMetrics, TestLogMetrics, eval_pred
 from plot_utils import plot_losses
@@ -40,7 +40,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # set device
     os.environ['CUDA_VISIBLE_DEVICES'] = device_id
     device, base_dir, interim_data_dir, data_dir = setup_env(device_id, dataset_name, hyper_params)
-    print('binary_GNN')
+    print('weighted_GNN')
     print(data_dir)
     # Create data loader for signed datasets
     datasets = create_data_loader(data_dir, hyper_params['tsim_th'],
@@ -54,7 +54,9 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     print('Get edge index from graph ({}N {}E)'.format(network.number_of_nodes(),
                                                        network.number_of_edges()))
     edge_index = get_edge_index(network, data_dir)
+    edge_weights = extract_edge_weights(network, edge_index, data_dir)
     edge_index = edge_index.to(device)
+    edge_weights = edge_weights.to(device)
     # Get node features
     print('Computing GNN features ({})...'.format(train_hyperparams['input_embed']))
     node_features = get_gnn_embeddings(data_dir, {'type': train_hyperparams['input_embed'],
@@ -113,7 +115,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
                 break
             model.train()
             optimizer.zero_grad()
-            pred = model(node_features, edge_index).flatten()
+            pred = model(node_features, edge_index, edge_weights).flatten()
             loss = loss_fn(pred[datasets['splits'][run_id]['train']],
                            datasets['labels'][datasets['splits'][run_id]['train']])
             loss.backward()
@@ -123,7 +125,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
                 # Validation step
                 model.eval()
                 with torch.no_grad():
-                    pred = model(node_features, edge_index).detach().cpu().numpy().flatten()
+                    pred = model(node_features, edge_index, edge_weights).detach().cpu().numpy().flatten()
                     val_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['val'])
                     train_logger.val_update(run_id, val_metrics[train_hyperparams["metric_to_optimize"]])
                     if val_metrics[train_hyperparams["metric_to_optimize"]] > BEST_VAL_METRIC:
@@ -139,7 +141,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
         model.load_state_dict(torch.load(best_model_path))
         model.eval()
         with torch.no_grad():
-            pred = model(node_features, edge_index).detach().cpu().numpy().flatten()
+            pred = model(node_features, edge_index, edge_weights).detach().cpu().numpy().flatten()
 
         # Evaluate perfomance on val set
         val_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['val'])

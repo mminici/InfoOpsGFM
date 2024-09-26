@@ -14,6 +14,11 @@ from datetime import datetime
 from datetime import timedelta
 
 
+def print_network_stats(network):
+    print(f'Number of nodes: {network.number_of_nodes()}')
+    print(f'Number of edges: {network.number_of_edges()}')
+
+
 def get_tweet_timestamp(tid):
     try:
         offset = 1288834974657
@@ -25,34 +30,21 @@ def get_tweet_timestamp(tid):
 
 
 def process_data(tweet_df):
-    tweet_df['quoted_tweet_tweetid'] = tweet_df['quoted_tweet_tweetid'].astype('Int64')
     tweet_df['retweet_tweetid'] = tweet_df['retweet_tweetid'].astype('Int64')
 
     # Tweet type classification
     tweet_type = []
     for i in range(tweet_df.shape[0]):
-        if pd.notnull(tweet_df['quoted_tweet_tweetid'].iloc[i]):
-            if pd.notnull(tweet_df['retweet_tweetid'].iloc[i]):
-                if pd.notnull(tweet_df['in_reply_to_tweetid'].iloc[i]):
-                    continue
-                else:
-                    tweet_type.append('retweet')
+        if pd.notnull(tweet_df['retweet_tweetid'].iloc[i]):
+            if pd.notnull(tweet_df['in_reply_to_tweetid'].iloc[i]):
+                continue
             else:
-                if pd.notnull(tweet_df['in_reply_to_tweetid'].iloc[i]):
-                    tweet_type.append('reply')
-                else:
-                    tweet_type.append('quoted')
+                tweet_type.append('retweet')
         else:
-            if pd.notnull(tweet_df['retweet_tweetid'].iloc[i]):
-                if pd.notnull(tweet_df['in_reply_to_tweetid'].iloc[i]):
-                    continue
-                else:
-                    tweet_type.append('retweet')
+            if pd.notnull(tweet_df['in_reply_to_tweetid'].iloc[i]):
+                tweet_type.append('reply')
             else:
-                if pd.notnull(tweet_df['in_reply_to_tweetid'].iloc[i]):
-                    tweet_type.append('reply')
-                else:
-                    tweet_type.append('original')
+                tweet_type.append('original')
     tweet_df['tweet_type'] = tweet_type
     tweet_df = tweet_df[tweet_df.tweet_type != 'retweet']
 
@@ -160,6 +152,139 @@ def create_sim_score_df(lims, D, I, search_query1, combined_tweets_df):
     return result
 
 
+from pathlib import Path
+import re
+
+
+def check_file_with_icnt(directory_path, i_cnt_value):
+    """
+    Checks if there is at least one file with the specified 'i_cnt' value in the given directory.
+
+    Args:
+        directory_path (Path): The path to the directory where the files are located (Path object).
+        i_cnt_value (str or int): The value of 'i_cnt' to search for in the file names.
+
+    Returns:
+        bool: True if at least one file with the specified 'i_cnt' exists, False otherwise.
+    """
+    # Convert the i_cnt_value to a string to match against the filenames
+    i_cnt_value = str(i_cnt_value)
+
+    # Regular expression to match the file pattern 'threshold_{threshold}_{i_cnt}.csv'
+    pattern = re.compile(rf'threshold_\d+_{i_cnt_value}\.csv')
+
+    # Iterate over the files in the directory and check for a match
+    for file in directory_path.iterdir():
+        if file.is_file() and pattern.match(file.name):
+            return True  # Found a matching file
+
+    return False  # No matching file found
+
+
+def produce_sim_files(df, timewindow, encoder_model, i_cnt, init_date, outputDir):
+    sentences = df.clean_tweet.tolist()
+
+    if len(sentences) < 100:
+        init_date = init_date + timedelta(days=timewindow)
+        print('need to stretch the sliding window')
+        return None, None
+
+    plot_embeddings = encoder_model.encode(sentences)
+
+    try:
+        dim1 = plot_embeddings.shape[0]
+        dim2 = plot_embeddings.shape[1]  # vector dimension
+        assert dim1 > 100
+    except:
+        init_date = init_date + timedelta(days=timewindow)
+        print('need to stretch the sliding window')
+        return None, None
+
+    # Check if the file already exists
+    if check_file_with_icnt(outputDir, i_cnt):
+        i_cnt += 1
+        return init_date, i_cnt
+
+    db_vectors1 = plot_embeddings.copy().astype(np.float32)
+    a = [i for i in range(plot_embeddings.shape[0])]
+    db_ids1 = np.array(a, dtype=np.int64)
+
+    print('\t FAISS utility to normalize vectors')
+    faiss.normalize_L2(db_vectors1)
+
+    print('\t FAISS utility to create index')
+    index1 = faiss.IndexFlatIP(dim2)
+    index1 = faiss.IndexIDMap(index1)  # mapping df index as id
+    print('\t FAISS utility to populate DB')
+    index1.add_with_ids(db_vectors1, db_ids1)
+
+    search_query1 = plot_embeddings.copy().astype(np.float32)
+
+    # Batch version
+    # Number of vectors
+    # n_vectors = len(sentences)
+    # batch_size = 65536
+    # init_threshold = 0.7
+
+    # Prepare arrays to store results
+    # lims = np.zeros(n_vectors + 1, dtype=np.int64)  # Correct size for lims
+    # D_list = []
+    # I_list = []
+    # current_pos = 0
+
+    # Perform batched range search
+    # for start_idx in range(0, n_vectors, batch_size):
+    #     end_idx = min(start_idx + batch_size, n_vectors)
+    #     batch = plot_embeddings[start_idx:end_idx].copy().astype(np.float32)
+    # Normalize the batch
+    #     faiss.normalize_L2(batch)
+    # Perform range search on the batch
+    #     lims_batch, D_batch, I_batch = index1.range_search(x=batch, thresh=init_threshold)
+    # Update `lims` to reflect the number of results for this batch
+    #     num_results = lims_batch[-1]
+    #     lims[start_idx + 1: end_idx + 1] = current_pos + lims_batch[1:]  # Correct cumulative results
+    #     current_pos += num_results
+    # Do NOT adjust I_batch, as it already contains global indices
+    # Store the results
+    #     D_list.append(D_batch)
+    #     I_list.append(I_batch)
+
+    # Concatenate D and I lists
+    # D = np.concatenate(D_list)
+    # I = np.concatenate(I_list)
+
+    # Old space-inefficient version
+    faiss.normalize_L2(search_query1)
+    init_threshold = 0.7
+    print('\t FAISS utility to query text pairs more similar than 0.7 cosine sim')
+    lims, D, I = index1.range_search(x=search_query1, thresh=init_threshold)
+
+    print('Retrieved results of index search')
+
+    sim_score_df = create_sim_score_df(lims, D, I, search_query1, df)
+
+    print('Generated Similarity Score DataFrame')
+
+    del df
+
+    for threshold in np.arange(0.7, 1.01, 0.05):
+        print("Threshold: ", threshold)
+
+        sim_score_temp_df = sim_score_df[
+            (sim_score_df.sim_score >= threshold) & (sim_score_df.sim_score < threshold + 0.05)]
+
+        text_sim_network = sim_score_temp_df[['source_user', 'target_user']]
+        # text_sim_network = text_sim_network.drop_duplicates(subset=['source_user', 'target_user'], keep='first')
+        text_sim_network = pd.DataFrame(text_sim_network.value_counts(subset=(['source_user', 'target_user'])))
+        text_sim_network.reset_index(inplace=True)
+        text_sim_network.columns = ['source_user', 'target_user', 'count']
+
+        outputfile = outputDir / f'threshold_{threshold}_{i_cnt}.csv'
+        text_sim_network.to_csv(outputfile)
+    i_cnt += 1
+    return init_date, i_cnt
+
+
 # MAIN FUNCTION
 # Data assumptions:
 #   - datasetsPaths: list containing the absolute paths referring to the datasets to analyze
@@ -167,11 +292,13 @@ def create_sim_score_df(lims, D, I, search_query1, combined_tweets_df):
 # To solve computational issues, the function will create multiple output files of users sharing
 # similar texts that will need to then be merged into a network using the getSimilarityNetwork function (see below)
 
-def textSim(control, treated, outputDir, stopword, cudaId='1'):
+def textSim(control, treated, outputDir, stopword, timeWindow, cudaId='1', maxRows=100000):
     os.environ["CUDA_VISIBLE_DEVICES"] = cudaId
-    control = control[['id', 'full_text', 'lang', 'user', 'created_at']]
-    control.columns = ['tweetid', 'tweet_text', 'lang', 'user', 'created_at']
+    import torch
+    control = control[['tweetid', 'userid', 'tweet_time', 'tweet_language', 'tweet_text']]
+    control['tweetid'] = control['tweetid'].apply(lambda x: np.int64(x))
     treated = treated[['tweetid', 'userid', 'tweet_time', 'tweet_language', 'tweet_text']]
+    treated['tweetid'] = treated['tweetid'].apply(lambda x: np.int64(x))
 
     print('\t Preprocessing treated tweet text...')
     pos_en_df_all = preprocess_text(treated)
@@ -193,7 +320,7 @@ def textSim(control, treated, outputDir, stopword, cudaId='1'):
 
     pos_en_df_all['tweet_time'] = pos_en_df_all['tweetid'].apply(lambda x: get_tweet_timestamp(x))
     neg_en_df_all['tweet_time'] = neg_en_df_all['tweetid'].apply(lambda x: get_tweet_timestamp(x))
-    neg_en_df_all['userid'] = neg_en_df_all['user'].apply(lambda x: np.int64(x['id']))
+    neg_en_df_all['userid'] = neg_en_df_all['userid'].apply(lambda x: np.int64(x))
 
     date = pos_en_df_all['tweet_time'].min().date()
     finalDate = pos_en_df_all['tweet_time'].max().date()
@@ -201,12 +328,15 @@ def textSim(control, treated, outputDir, stopword, cudaId='1'):
     i = 1
 
     print('\t Embed tweets in sliding windows')
+    device = torch.device("cuda" if torch.cuda.is_available() and cudaId != "-1" else "cpu")
+    encoder = SentenceTransformer('stsb-xlm-r-multilingual').to(device)
+    import copy
     while date <= finalDate:
+        init_date = copy.deepcopy(date)
         pos_en_df = pos_en_df_all.loc[(pos_en_df_all['tweet_time'].dt.date >= date) & (
-                pos_en_df_all['tweet_time'].dt.date < date + timedelta(days=1))]
+                pos_en_df_all['tweet_time'].dt.date < date + timedelta(days=timeWindow))]
         neg_en_df = neg_en_df_all.loc[(neg_en_df_all['tweet_time'].dt.date >= date) & (
-                neg_en_df_all['tweet_time'].dt.date < date + timedelta(days=1))]
-
+                neg_en_df_all['tweet_time'].dt.date < date + timedelta(days=timeWindow))]
         combined_tweets_df = pd.concat([pos_en_df, neg_en_df], axis=0)
         combined_tweets_df.reset_index(inplace=True)
         combined_tweets_df = combined_tweets_df.loc[:, ~combined_tweets_df.columns.str.contains('index')]
@@ -216,61 +346,31 @@ def textSim(control, treated, outputDir, stopword, cudaId='1'):
 
         combined_tweets_df.reset_index(inplace=True)
         combined_tweets_df = combined_tweets_df.rename(columns={'index': 'my_idx'})
+        numRows = len(combined_tweets_df.index)
+        if numRows > maxRows + 101:
+            print('[WARNING]: Downsampling from', numRows, 'to', maxRows)
+            convergence = True
+            while convergence:
+                # Select maxRows examples from the tweets
+                sampled_rows = np.random.choice(combined_tweets_df.index, replace=False,
+                                                size=min(maxRows, len(combined_tweets_df.index)))
+                # Produce the similarity files
+                date, i = produce_sim_files(combined_tweets_df.loc[sampled_rows], timeWindow, encoder, i, date,
+                                            outputDir)
+                # Drop the sampled rows from the file
+                combined_tweets_df = combined_tweets_df.drop(sampled_rows)
+                if len(combined_tweets_df.index) < 101:
+                    convergence = False
+        else:
+            date_temp, i_temp = produce_sim_files(combined_tweets_df, timeWindow, encoder, i, date, outputDir)
+            if date_temp is None or i_temp is None:
+                date = init_date + timedelta(days=timeWindow)
+                continue
+            else:
+                date = init_date
+                i = i_temp
 
-        sentences = combined_tweets_df.clean_tweet.tolist()
-        encoder = SentenceTransformer('stsb-xlm-r-multilingual')
-        plot_embeddings = encoder.encode(sentences)
-
-        try:
-            dim1 = plot_embeddings.shape[0]
-            dim2 = plot_embeddings.shape[1]  # vector dimension
-            assert dim1 > 100
-        except:
-            date = date + timedelta(days=1)
-            print('need to stretch the sliding window')
-            continue
-
-        db_vectors1 = plot_embeddings.copy().astype(np.float32)
-        a = [i for i in range(plot_embeddings.shape[0])]
-        db_ids1 = np.array(a, dtype=np.int64)
-
-        print('\t FAISS utility to normalize vectors')
-        faiss.normalize_L2(db_vectors1)
-
-        print('\t FAISS utility to create index')
-        index1 = faiss.IndexFlatIP(dim2)
-        index1 = faiss.IndexIDMap(index1)  # mapping df index as id
-        print('\t FAISS utility to populate DB')
-        index1.add_with_ids(db_vectors1, db_ids1)
-
-        search_query1 = plot_embeddings.copy().astype(np.float32)
-
-        faiss.normalize_L2(search_query1)
-
-        init_threshold = 0.7
-        print('\t FAISS utility to query text pairs more similar than 0.7 cosine sim')
-        lims, D, I = index1.range_search(x=search_query1, thresh=init_threshold)
-
-        print('Retrieved results of index search')
-        sim_score_df = create_sim_score_df(lims, D, I, search_query1, combined_tweets_df)
-
-        print('Generated Similarity Score DataFrame')
-
-        del combined_tweets_df
-
-        for threshold in np.arange(0.7, 1.01, 0.05):
-            print("Threshold: ", threshold)
-
-            sim_score_temp_df = sim_score_df[sim_score_df.sim_score >= threshold]
-
-            text_sim_network = sim_score_temp_df[['source_user', 'target_user']]
-            text_sim_network = text_sim_network.drop_duplicates(subset=['source_user', 'target_user'], keep='first')
-
-            outputfile = outputDir / f'threshold_{threshold}_{i}.csv'
-            text_sim_network.to_csv(outputfile)
-
-        date = date + timedelta(days=1)
-        i += 1
+        date = init_date + timedelta(days=timeWindow)
 
 
 # to run after the textSim function inputDir: path of the directory containing the similarity files; it corresponds
@@ -309,21 +409,27 @@ def getSimilarityNetwork(outputDir):
             temp['weight'] = thr
             combined = pd.concat([combined, temp])
 
-    combined.sort_values(by='weight', ascending=False, inplace=True)
-    combined.drop_duplicates(subset=['source_user', 'target_user'], inplace=True)
-    G = nx.from_pandas_edgelist(combined, source='source_user', target='target_user', edge_attr=['weight'])
+    # combined.sort_values(by='weight', ascending=False, inplace=True)
+    # combined.drop_duplicates(subset=['source_user', 'target_user'], inplace=True)
+    combined = combined.groupby(['source_user', 'target_user', 'weight'], as_index=False).sum()
+    combined['weight'] = combined['weight'] * combined['count']
+    combined = combined.groupby(['source_user', 'target_user'], as_index=False).sum()
+    combined['weight'] = combined['weight'] / combined['count']
+    G = nx.from_pandas_edgelist(combined[['source_user', 'target_user', 'weight']], source='source_user',
+                                target='target_user', edge_attr=['weight'])
 
     return G
 
 
-def getTweetSimNetwork(control, treated, outputDir, cudaId='1'):
+def getTweetSimNetwork(control, treated, outputDir, timeWindow, cudaId='1'):
     # Downloading Stopwords
     nltk.download('stopwords')
     # Load English Stop Words
     stopword = stopwords.words('english')
     outputDir.mkdir(parents=True, exist_ok=True)
     # compute tweet similarity
-    textSim(control=control, treated=treated, outputDir=outputDir, stopword=stopword, cudaId=cudaId)
+    textSim(control=control, treated=treated, outputDir=outputDir, timeWindow=timeWindow,
+            stopword=stopword, cudaId=cudaId)
     # get similarity network
     G = getSimilarityNetwork(outputDir)
     print(f'Number of nodes: {G.number_of_nodes()}')
