@@ -3,7 +3,7 @@
 ## Reproducibility Steps
 ### Data preprocessing
 - Clone the repository in your local space
-- Download the data from this [zenodo anonymous link](https://zenodo.org/records/13357621) and unzip it in the main folder.
+- Download the data from this [zenodo public link](https://zenodo.org/records/13357621) and unzip it in the main folder.
   - Your project tree should resemble this structure:
     - /src
     - /data/
